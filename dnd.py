@@ -1,6 +1,6 @@
 from lru import LRU
-from sklearn.neighbors import LSHForest
-# TODO: Use annoy instead of scikit-learn; profile index-building performance (we need to use index-rebuilding a lot)
+from scipy.spatial.ckdtree import cKDTree
+# TODO: Use annoy instead of scipy ckdtree; profile index-building performance (we need to use index-rebuilding a lot)
 # from annoy import AnnoyIndex
 
 
@@ -8,23 +8,36 @@ class DND:
 
     def __init__(self, num_neighbors=50, max_memory=5e5):
         self.dictionary = LRU(max_memory)
-        self.ann = LSHForest(n_neighbors=num_neighbors)
+        self.num_neighbors = num_neighbors
+        self.ann = None
+        self.cached_embeddings = None
 
     # This is factored out, since the ANN implementation will change
     def _search_ann(self, lookup_key):
+        # TODO: eps is for approx. neighbor; if eps=0 it gives back accurate results
+        # p = 2 -- Euclidean distance
+        # n_jobs = -1 -- Number of jobs to schedule for parallel processing. If -1 is given, all processors are used.
+        _, indices = self.ann.query(lookup_key, k=self.num_neighbors, eps=0, p=2, n_jobs=-1)
+        return [self.cached_embeddings[i] for i in indices]
 
-        return None
+    def _make_hashable_for_dict(self):
+        pass
 
-    # LSHForest specific stuff
-    def __update_lsh_forest(self, key):
-        self.ann.partial_fit(key)
+    # rebuild KDTree
+    def __rebuild_kd_tree(self):
+        self.cached_embeddings = self.dictionary.keys()
+        self.ann = cKDTree(self.cached_embeddings, compact_nodes=True, balanced_tree=True)
 
     def lookup(self, key):
         # The list
         neighbor_embeddings = self._search_ann(key)
-        neighbor_embeddings_values =
-        # TODO: Vissza kéne adnia num_neighbors szerinti kulcsokat és értékeket (anélkül h. szétbasznánk az LRU sorrendet)
+        # We modify the LRU order with this line
+        neighbor_embeddings_values = [self.dictionary[embedding] for embedding in neighbor_embeddings]
         return neighbor_embeddings, neighbor_embeddings_values
 
     def upsert(self, key, val):
+        # key has to be a tuple -- hashable type
+        assert "__hash__" in dir(key)
         self.dictionary[key] = val
+        # Rebuild KDTree
+        self.__rebuild_kd_tree()
