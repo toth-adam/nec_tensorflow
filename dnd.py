@@ -28,7 +28,13 @@ class DND:
         self.cached_embeddings = self.dictionary.keys()
         self.ann = cKDTree(self.cached_embeddings, compact_nodes=True, balanced_tree=True)
 
+    # We can define the limit as a parameter (and not the same number as the neighbor)
+    def is_queryable(self):
+        return True if len(self.dictionary) > self.num_neighbors else False
+
     def lookup(self, key):
+        # key has to be a tuple -- hashable type
+        assert "__hash__" in dir(key)
         # The list
         neighbor_embeddings = self._search_ann(key)
         # We modify the LRU order with this line
