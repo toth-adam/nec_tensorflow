@@ -126,7 +126,7 @@ def image_preprocessor(state):
     state = np.dot(state[..., :3], [0.299, 0.587, 0.114]) / 255.0
     return state
 
-# Lehet 4 framet kell stackelni akkor meg ez ronda így...
+# Lehet 4 framet kell stackelni akkor meg ez ronda így..
 def frame_stacking(st_prev, st_curr):
     st_prev_r = np.reshape(st_prev, (84, 84, 1))
     st_curr_r = np.reshape(st_curr, (84, 84, 1))
