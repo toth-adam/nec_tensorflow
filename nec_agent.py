@@ -1,6 +1,8 @@
 import numpy as np
 import tensorflow as tf
+import tensorflow.contrib.slim as slim
 from dnd import DND
+from scipy import misc
 
 
 class NECAgent:
@@ -28,13 +30,25 @@ class NECAgent:
         self.session = tf_session
 
         # Tensorflow graph building
+        # Without frame stacking
         self.state = tf.placeholder(tf.float32, )
+        # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
+        self.state = tf.placeholder(shape=[None, 84, 84, 2], dtype=tf.float32)
         self.action = tf.placeholder(tf.int8, [None])
 
-        # TODO: ConvNet part of TFGraph
+        # TODO: We have to stack exactly 2 frames now to be able to feed it into self.state (2 channel)
+        self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
+                                 inputs=self.state, num_outputs=32,
+                                 kernel_size=[8, 8], stride=[4, 4], padding='VALID')
+        self.conv2 = slim.conv2d(activation_fn=tf.nn.elu,
+                                 inputs=self.conv1, num_outputs=16,
+                                 kernel_size=[4, 4], stride=[2, 2], padding='VALID')
+        self.conv3 = slim.conv2d(activation_fn=tf.nn.elu,
+                                 inputs=self.conv2, num_outputs=16,
+                                 kernel_size=[3, 3], stride=[1, 1], padding='VALID')
 
-        # TODO: This is the final fully connected layer?????
-        self.state_embedding = ...
+        # TODO: This is the final fully connected layer
+        self.state_embedding = slim.fully_connected(slim.flatten(self.conv3), 256, activation_fn=tf.nn.elu)
 
         # Retrieve info from DND dictionary
         # TODO: Lehet át kell írni a 3. paramétert
@@ -107,9 +121,18 @@ class NECAgent:
 
 
 def image_preprocessor(state):
-    # Implement, if necessary
+    state = misc.imresize(state, [84, 84])
+    # greyscaling and normalizing state
+    state = np.dot(state[..., :3], [0.299, 0.587, 0.114]) / 255.0
     return state
 
+# Lehet 4 framet kell stackelni akkor meg ez ronda így...
+def frame_stacking(st_prev, st_curr):
+    st_prev_r = np.reshape(st_prev, (84, 84, 1))
+    st_curr_r = np.reshape(st_curr, (84, 84, 1))
+    # Frame order: current, previous
+    stacked_frames = np.append(st_curr_r, st_prev_r, axis=2)
+    return stacked_frames
 
 def transform_array_to_tuple(tf_array):
     return tuple(tf_array)
