@@ -5,7 +5,7 @@ class replay_memory:
 
     def __init__(self, size=5e5):
         self.rep_mem = LRU(int(size)) # size should be "int", kiírta hogy int kell neki ha csak simán bebasztam a size-t (dunno miért)
-
+                                        # emiatt lett a második commit.....
     def append(self, item):
         self.rep_mem[len(self.rep_mem)] = item # simple item appending
 
