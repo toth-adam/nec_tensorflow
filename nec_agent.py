@@ -6,7 +6,6 @@ from scipy import misc
 
 
 class NECAgent:
-
     def __init__(self, tf_session, action_vector):
 
         # TODO: parameters
@@ -126,6 +125,7 @@ def image_preprocessor(state):
     state = np.dot(state[..., :3], [0.299, 0.587, 0.114]) / 255.0
     return state
 
+
 # Lehet 4 framet kell stackelni akkor meg ez ronda így..
 def frame_stacking(st_prev, st_curr):
     st_prev_r = np.reshape(st_prev, (84, 84, 1))
@@ -134,5 +134,15 @@ def frame_stacking(st_prev, st_curr):
     stacked_frames = np.append(st_curr_r, st_prev_r, axis=2)
     return stacked_frames
 
+
 def transform_array_to_tuple(tf_array):
     return tuple(tf_array)
+
+
+def actual_epsilon(step):
+    eps = 1.0
+    if 4999 < step < 25000:
+        eps = 1 - ((step - 5000) * 4.995e-5)
+    elif step > 24999:
+        eps = 0.001
+    return eps
