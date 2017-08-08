@@ -10,10 +10,8 @@ class NECAgent:
 
         # TODO: parameters
         self.delta = 1e-3
-        # Initial epsilon-greedy policy parameter # HYPERPARAMETER
-        # Quote from the paper: "In practice, we use epsilon-greedy policy during training with a low epsilon"
         #
-        self.initial_epsilon = 0.7
+        self.initial_epsilon = 1.0
 
         # TODO: Átírni, hogy __init__ paraméter legyen
         # RMSProp parameters
@@ -32,10 +30,10 @@ class NECAgent:
         # Without frame stacking
         self.state = tf.placeholder(tf.float32, )
         # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
-        self.state = tf.placeholder(shape=[None, 84, 84, 2], dtype=tf.float32)
+        self.state = tf.placeholder(shape=[None, 84, 84, 4], dtype=tf.float32)
         self.action = tf.placeholder(tf.int8, [None])
 
-        # TODO: We have to stack exactly 2 frames now to be able to feed it into self.state (2 channel)
+        # TODO: We have to stack exactly 4 frames now to be able to feed it into self.state (4 channel)
         self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
                                  inputs=self.state, num_outputs=32,
                                  kernel_size=[8, 8], stride=[4, 4], padding='VALID')
@@ -80,7 +78,7 @@ class NECAgent:
     def get_action(self, state):
         # TODO: We can use numpy.random.RandomState if we want to test the implementation
         # Choose the random action
-        if np.random.random_sample() < self._current_epsilon():
+        if np.random.random_sample() < curr_epsilon(step_nr):  # TODO: step_nr nincs inicializálva!!!
             action = np.random.choice(self.action_vector)
         # Choose the greedy action
         else:
@@ -125,24 +123,19 @@ def image_preprocessor(state):
     state = np.dot(state[..., :3], [0.299, 0.587, 0.114]) / 255.0
     return state
 
-
-# Lehet 4 framet kell stackelni akkor meg ez ronda így..
-def frame_stacking(st_prev, st_curr):
-    st_prev_r = np.reshape(st_prev, (84, 84, 1))
-    st_curr_r = np.reshape(st_curr, (84, 84, 1))
-    # Frame order: current, previous
-    stacked_frames = np.append(st_curr_r, st_prev_r, axis=2)
-    return stacked_frames
-
+#TODO: env_reset esetén a kapott observationt stackkelni kell 4szer : np.stack((o_t,o_t,o_t,o_t), axis=2)
+def frame_stacking(s_t, o_t): # Ahol az "s_t" a korábban stackkelt 4 frame, "o_t" pedig az új observation
+    s_t1 = np.append(s_t[:, :, 1:], np.expand_dims(o_t, axis=2), axis=2)
+    return s_t1
 
 def transform_array_to_tuple(tf_array):
     return tuple(tf_array)
 
 
-def actual_epsilon(step):
-    eps = 1.0
+def curr_epsilon(self, step):
+    eps = self.initial_epsilon
     if 4999 < step < 25000:
-        eps = 1 - ((step - 5000) * 4.995e-5)
+        eps = self.initial_epsilon - ((step - 5000) * 4.995e-5)
     elif step > 24999:
         eps = 0.001
     return eps
