@@ -1,6 +1,7 @@
 import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
+from tensorflow.python.framework import ops
 from dnd import DND
 from scipy import misc
 
@@ -28,10 +29,11 @@ class NECAgent:
 
         # Tensorflow graph building
         # Without frame stacking
-        self.state = tf.placeholder(tf.float32, )
+        # self.state = tf.placeholder(tf.float32, name="state")
         # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
-        self.state = tf.placeholder(shape=[None, 84, 84, 4], dtype=tf.float32)
-        self.action = tf.placeholder(tf.int8, [None])
+        self.state = tf.placeholder(shape=[None, 84, 84, 2], dtype=tf.float32, name="state")
+        # Azért van listában a None, hogy egyszerre több action-t is be tudjunk adni
+        self.action = tf.placeholder(tf.int8, [None], name="action")
 
         # TODO: We have to stack exactly 4 frames now to be able to feed it into self.state (4 channel)
         self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
@@ -63,13 +65,13 @@ class NECAgent:
         # A normalised_weightings a 2-es képlet
         normalised_weightings = weightings / tf.reduce_sum(weightings, axis=1, keep_dims=True)
         # Ez az 1-es képlet
-        self.pred_q = tf.reduce_sum(self.dnd_values * normalised_weightings, axis=1)
+        self.pred_q = tf.reduce_sum(self.dnd_values * normalised_weightings, axis=1, name="predicted_Q")
 
         # Loss Function
         # TODO: Ez miért stringes float?? miért nem tf.float
-        self.target_q = tf.placeholder(tf.float32, [None])
-        self.td_err = self.target_q - self.pred_q
-        total_loss = tf.reduce_sum(tf.square(self.td_err))
+        self.target_q = tf.placeholder(tf.float32, [None], name="target_Q")
+        self.td_err = tf.subtract(self.target_q, self.pred_q, name="td_error")
+        total_loss = tf.reduce_sum(tf.square(self.td_err, name="squared_error"), name="total_loss")
 
         # Optimizer
         self.optimizer = tf.train.RMSPropOptimizer(self.rms_learning_rate, decay=self.rms_decay,
@@ -77,22 +79,30 @@ class NECAgent:
 
     def get_action(self, state):
         # TODO: We can use numpy.random.RandomState if we want to test the implementation
+
+        # Mindegyik action-re megbecsüljük a Q(s_t, a)-t, ezzel fel is töltjük a DND-t
+        # Az eredeti paper Algorithm #1  - 2. sora
+        processed_state = image_preprocessor(state)
+        embedding, q_values = self.get_embeddings_and_q_values(processed_state, self.action_vector)
+
         # Choose the random action
         if np.random.random_sample() < curr_epsilon(step_nr):  # TODO: step_nr nincs inicializálva!!!
             action = np.random.choice(self.action_vector)
         # Choose the greedy action
         else:
-            processed_state = image_preprocessor(state)
-            embedding = self.get_state_embeddings(processed_state)
+            action = self.action_vector[np.argmax(q_values)]
 
-            dnd_values = [self._query_dnds(embedding, action) for action in self.action_vector]
-            # q_values = self.
+        # TODO: Have to save trajectory as well (states, state embeddings)
+        return action
 
     def get_state_embeddings(self, state):
         return self.session.run(self.state_embedding, feed_dict={self.state: state})
 
-    def get_q_values(self, embedding, action):
-        return self.session.run(self.pred_q, feed_dict={self.state_embedding: embedding, self.action: action})
+    def get_embeddings_and_q_values(self, state, actions):
+        # This returns a len=2 list: 1st: nd-array representing the state-embedding
+        #                            2nd: len=len(actions) list with the Q values for the actions
+        return self.session.run([self.state_embedding, self.pred_q], feed_dict={self.state: state,
+                                                                                self.action: actions})
 
     def reset(self):
         pass
@@ -104,17 +114,15 @@ class NECAgent:
     def _current_epsilon(self, decay=0):
         return self.initial_epsilon - decay * self.initial_epsilon
 
-    # TODO: Két külön függvényt kell írni. Egyik ami a tf.py_func-ba megy, a másik meg ami a self.get_action-be
     def _query_dnds(self, state_embedding, action):
         action_specific_dnd = self.dnds.get(action)
-        # If we are at the start of the training
-        if action_specific_dnd.is_queryable():
-            # Transform to tuple
-            # TODO: Maybe move it outside of this function?
-            state_embedding_tuple = transform_array_to_tuple(state_embedding)
-            return action_specific_dnd.lookup(state_embedding_tuple)
-        else:
-            pass
+        # Transform to tuple
+        # state_embedding_tuple = transform_array_to_tuple(state_embedding)
+
+        return action_specific_dnd.lookup_neighbors(state_embedding, state_hash)
+
+    def _fake_query_dnds(self, state_embedding, action):
+        return
 
 
 def image_preprocessor(state):
@@ -139,3 +147,14 @@ def curr_epsilon(self, step):
     elif step > 24999:
         eps = 0.001
     return eps
+
+
+if __name__ == "__main__":
+    with tf.Session() as sess:
+        agent = NECAgent(sess, [-1, 0, 1])
+
+        tf.summary.FileWriter("c:\\Work\\Coding\\temp\\", graph=sess.graph)
+
+        print(ops.get_gradient_function(agent.td_err.op))
+
+        print(tf.trainable_variables())
