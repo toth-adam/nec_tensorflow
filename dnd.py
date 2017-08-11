@@ -23,7 +23,7 @@ class DND:
         self.ann = None
         self.cached_embeddings = None
 
-        self.
+#        self.
 
     def __len__(self):
         return len(self.dictionary)
@@ -72,4 +72,5 @@ class DND:
         self.__rebuild_kd_tree()
 
     def upsert_tf(self):
+        pass
 
