@@ -23,11 +23,14 @@ class NECAgent:
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
 
-        self.fully_connected_neuron = 256
+        self.fully_connected_neuron = 5
         self._dnd_order = {k: LRU(dnd_max_memory) for k in action_vector}
 
         # Tensorflow Session object
         self.session = tf_session
+
+        # Global step
+        self.global_step = 0
 
         # Tensorflow graph building
         # Without frame stacking
@@ -36,7 +39,7 @@ class NECAgent:
         self.state = tf.placeholder(shape=[None, 84, 84, 2], dtype=tf.float32, name="state")
 
         # TODO: Át kell írni a shape-t
-        self.dnd_keys = tf.Variable(tf.zeros([self.number_of_actions, dnd_max_memory, self.fully_connected_neuron]),
+        self.dnd_keys = tf.Variable(tf.random_normal([self.number_of_actions, dnd_max_memory, self.fully_connected_neuron]),
                                     name="DND_keys")
         self.dnd_values = tf.Variable(tf.zeros([self.number_of_actions, dnd_max_memory, 1]), name="DND_values")
 
@@ -68,11 +71,11 @@ class NECAgent:
                                        lambda: tf.scatter_nd_add(self.dnd_values, self.dnd_write_index,
                                                                  self.dnd_value_update))
 
-        self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], tf.int32,
+        self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], [tf.int32, tf.int32],
                                   name="ann_search", grad=_ann_gradient)
 
-        self.nn_state_embeddings = tf.gather(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
-        self.nn_state_values = tf.gather(self.dnd_values, self.ann_search, name="nn_state_values")
+        self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
+        self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search, name="nn_state_values")
 
         # Retrieve info from DND dictionary
         # TODO: Lehet át kell írni a 3. paramétert
@@ -114,28 +117,37 @@ class NECAgent:
         # Global initialization
         self.init_op = tf.global_variables_initializer()
 
+        self.session.run(self.init_op)
+
     def _write_dnd(self, state):
-        return self.session.run(self.dnd_value_write, feed_dict={self.dnd_write_index: [[0]],
+
+        self.session.run(self.dnd_value_write, feed_dict={self.dnd_write_index: [[[0, 0], [1, 0], [2, 0]]],
                                                                  self.dnd_value_cond: 0,
-                                                                 self.dnd_value_update: [[[0],[1], [2], [3],[4],[5],[6],[7],[8],[9]]]})
+                                                                 self.dnd_value_update: [[[9], [3], [5.2]]]})
 
     def get_action(self, state):
         # TODO: We can use numpy.random.RandomState if we want to test the implementation
 
         # Mindegyik action-re megbecsüljük a Q(s_t, a)-t, ezzel fel is töltjük a DND-t
         # Az eredeti paper Algorithm #1  - 2. sora
-        processed_state = image_preprocessor(state)
-        embedding, q_values = self.get_embeddings_and_q_values(processed_state, self.action_vector)
+        # processed_state = image_preprocessor(state)
+        processed_state = state
+
+        pred_q_values = self.session.run(self.pred_q_values, feed_dict={self.state: processed_state})
 
         # Choose the random action
-        if np.random.random_sample() < curr_epsilon(step_nr):  # TODO: step_nr nincs inicializálva!!!
+        if np.random.random_sample() < curr_epsilon(self.global_step):  # TODO: step_nr nincs inicializálva!!!
             action = np.random.choice(self.action_vector)
         # Choose the greedy action
         else:
-            action = self.action_vector[np.argmax(q_values)]
+            action = self.action_vector[np.argmax(pred_q_values)]
 
         # TODO: Have to save trajectory as well (states, state embeddings)
+        self.global_step += 1
         return action
+
+    def test_ann_indices(self, state):
+        return self.session.run(self.nn_state_embeddings, feed_dict={self.state: state})
 
     def get_state_embeddings(self, state):
         return self.session.run(self.state_embedding, feed_dict={self.state: state})
@@ -149,18 +161,17 @@ class NECAgent:
     def reset(self):
         pass
 
-    # def get_state(self):
-    #     pass
-
-    def _query_dnds(self, state_embedding, action):
-        action_specific_dnd = self.dnds.get(action)
-        # Transform to tuple
-        # state_embedding_tuple = transform_array_to_tuple(state_embedding)
-
-        return action_specific_dnd.lookup_neighbors(state_embedding, state_hash)
+    def curr_epsilon(self):
+        eps = self.initial_epsilon
+        if 4999 < self.global_step < 25000:
+            eps = self.initial_epsilon - ((self.global_step - 5000) * 4.995e-5)
+        elif self.global_step > 24999:
+            eps = 0.001
+        return eps
 
     def _search_ann(self, search_key, dnd_keys):
-        pass
+        return [[[0, 1], [1, 0]], [[0, 0], [1, 1]]]
+        # return [[[0, 0], [0, 2], [1, 0], [1, 2], [2, 0], [2, 2]]]
 
 
 def _ann_gradient(op, grad):
@@ -195,15 +206,6 @@ def transform_array_to_tuple(tf_array):
     return tuple(tf_array)
 
 
-def curr_epsilon(self, step):
-    eps = self.initial_epsilon
-    if 4999 < step < 25000:
-        eps = self.initial_epsilon - ((step - 5000) * 4.995e-5)
-    elif step > 24999:
-        eps = 0.001
-    return eps
-
-
 if __name__ == "__main__":
     with tf.Session() as sess:
         agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=10)
@@ -215,10 +217,14 @@ if __name__ == "__main__":
         # print(tf.trainable_variables())
         fake_frame = np.random.rand(1, 84, 84, 2)
 
-        sess.run(agent.init_op)
-
         # print(sess.run(agent.state_embedding, feed_dict={agent.state: fake_frame}))
 
-        print(agent._write_dnd(fake_frame))
+        # print(agent._write_dnd(fake_frame))
 
-        # print(agent.dnd_values.eval())
+        print(agent.dnd_keys.eval())
+
+        print("kaki")
+
+        print(agent.test_ann_indices(fake_frame))
+
+        # print(agent.get_action(fake_frame))
