@@ -2,12 +2,12 @@ import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 from tensorflow.python.framework import ops
-from dnd import DND
 from scipy import misc
+from lru import LRU
 
 
 class NECAgent:
-    def __init__(self, tf_session, action_vector):
+    def __init__(self, tf_session, action_vector, dnd_max_memory=500000):
 
         # TODO: parameters
         self.delta = 1e-3
@@ -24,7 +24,7 @@ class NECAgent:
         self.number_of_actions = len(action_vector)
 
         self.fully_connected_neuron = 256
-        # self.dnds = {k: DND() for k in action_vector}
+        self._dnd_order = {k: LRU(dnd_max_memory) for k in action_vector}
 
         # Tensorflow Session object
         self.session = tf_session
@@ -35,9 +35,10 @@ class NECAgent:
         # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
         self.state = tf.placeholder(shape=[None, 84, 84, 2], dtype=tf.float32, name="state")
 
-        self.dnd_keys = tf.Variable(tf.zeros([self.number_of_actions, 500000, self.fully_connected_neuron]),
+        # TODO: Át kell írni a shape-t
+        self.dnd_keys = tf.Variable(tf.zeros([self.number_of_actions, dnd_max_memory, self.fully_connected_neuron]),
                                     name="DND_keys")
-        self.dnd_values = tf.Variable(tf.zeros([self.number_of_actions, 500000, 1]), name="DND_values")
+        self.dnd_values = tf.Variable(tf.zeros([self.number_of_actions, dnd_max_memory, 1]), name="DND_values")
 
         # TODO: We have to stack exactly 4 frames now to be able to feed it into self.state (4 channel)
         self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
@@ -110,6 +111,14 @@ class NECAgent:
         #                                            epsilon=self.rms_epsilon).minimize(total_loss)
         self.optimizer = tf.train.AdamOptimizer(self.rms_learning_rate).minimize(total_loss)
 
+        # Global initialization
+        self.init_op = tf.global_variables_initializer()
+
+    def _write_dnd(self, state):
+        return self.session.run(self.dnd_value_write, feed_dict={self.dnd_write_index: [[0]],
+                                                                 self.dnd_value_cond: 0,
+                                                                 self.dnd_value_update: [[[0],[1], [2], [3],[4],[5],[6],[7],[8],[9]]]})
+
     def get_action(self, state):
         # TODO: We can use numpy.random.RandomState if we want to test the implementation
 
@@ -175,10 +184,12 @@ def image_preprocessor(state):
     state = np.dot(state[..., :3], [0.299, 0.587, 0.114]) / 255.0
     return state
 
-#TODO: env_reset esetén a kapott observationt stackkelni kell 4szer : np.stack((o_t,o_t,o_t,o_t), axis=2)
-def frame_stacking(s_t, o_t): # Ahol az "s_t" a korábban stackkelt 4 frame, "o_t" pedig az új observation
+
+# TODO: env_reset esetén a kapott observationt stackkelni kell 4szer : np.stack((o_t,o_t,o_t,o_t), axis=2)
+def frame_stacking(s_t, o_t):  # Ahol az "s_t" a korábban stackkelt 4 frame, "o_t" pedig az új observation
     s_t1 = np.append(s_t[:, :, 1:], np.expand_dims(o_t, axis=2), axis=2)
     return s_t1
+
 
 def transform_array_to_tuple(tf_array):
     return tuple(tf_array)
@@ -195,10 +206,19 @@ def curr_epsilon(self, step):
 
 if __name__ == "__main__":
     with tf.Session() as sess:
-        agent = NECAgent(sess, [-1, 0, 1])
+        agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=10)
 
-        tf.summary.FileWriter("c:\\Work\\Coding\\temp\\", graph=sess.graph)
+        # tf.summary.FileWriter("c:\\Work\\Coding\\temp\\", graph=sess.graph)
+        #
+        # print(ops.get_gradient_function(agent.ann_search.op))
+        #
+        # print(tf.trainable_variables())
+        fake_frame = np.random.rand(1, 84, 84, 2)
 
-        print(ops.get_gradient_function(agent.ann_search.op))
+        sess.run(agent.init_op)
 
-        print(tf.trainable_variables())
+        # print(sess.run(agent.state_embedding, feed_dict={agent.state: fake_frame}))
+
+        print(agent._write_dnd(fake_frame))
+
+        # print(agent.dnd_values.eval())
