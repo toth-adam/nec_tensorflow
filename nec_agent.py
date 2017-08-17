@@ -61,12 +61,12 @@ class NECAgent:
         self.state_embedding = slim.fully_connected(slim.flatten(self.conv3), self.fully_connected_neuron,
                                                     activation_fn=tf.nn.elu)
 
-        self.dnd_write_index = tf.placeholder(tf.int32, None, name=dnd_write_index)
+        self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
 
         self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, self.state_embedding)
 
-        self.dnd_value_update = tf.placeholder(tf.float32, None, name=dnd_value_update)
-        self.dnd_value_cond = tf.placeholder(tf.int32, None, name=dnd_value_condition)  # 0: hozzáad; 1: felülír
+        self.dnd_value_update = tf.placeholder(tf.float32, None, name="dnd_value_update")
+        self.dnd_value_cond = tf.placeholder(tf.int32, None, name="dnd_value_condition")  # 0: hozzáad; 1: felülír
 
         self.dnd_value_write = tf.cond(tf.less(tf.constant(0), self.dnd_value_cond),
                                        lambda: tf.scatter_nd_update(self.dnd_values, self.dnd_write_index,
@@ -74,7 +74,7 @@ class NECAgent:
                                        lambda: tf.scatter_nd_add(self.dnd_values, self.dnd_write_index,
                                                                  self.dnd_value_update))
 
-        self.dnd_gather_index = tf.placeholder(tf.int32, None, name=dnd_gather_index)
+        self.dnd_gather_index = tf.placeholder(tf.int32, None, name="dnd_gather_index")
         self.dnd_gather_value = tf.gather(self.dnd_values, self.dnd_gather_index)
 
         self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], [tf.int32, tf.int32],
@@ -142,7 +142,7 @@ class NECAgent:
         pred_q_values = self.session.run(self.pred_q_values, feed_dict={self.state: processed_state})
 
         # Choose the random action
-        if np.random.random_sample() < curr_epsilon(self.global_step):  # TODO: step_nr nincs inicializálva!!!
+        if np.random.random_sample() < curr_epsilon():  # TODO: step_nr nincs inicializálva!!!
             action = np.random.choice(self.action_vector)
         # Choose the greedy action
         else:
@@ -182,13 +182,16 @@ class NECAgent:
     def tabular_like_update(self, state_hash, action, q_n):
         if state_hash in self._dnd_order[action]:
             dnd_gather_ind = self._dnd_order[action][state_hash] # itt a visszakapott indexet olyanna kell tenni hogy a tf.gather beszopkodja
-            gather_indices = [[[dnd_gather_ind, 1, action]]]  # ha mar atirodik a dnd shape
+            gather_indices = [[[[dnd_gather_ind, 1, action]]]]  # ha mar atirodik a dnd shape, meg ennek a shapje is lehet hogy szar
             dnd_q_value = self.session.run(self.dnd_gather_value, feed_dict={self.dnd_gather_index: gather_indices})
             update_value = self.tab_alpha*(q_n - dnd_q_value)
             self.session.run(self.dnd_value_write,
-                             feed_dict={self.dnd_value_cond:[0],
-                                        self.dnd_value_update:[update_value],
-                                        self.dnd_write_index:gather_indices})
+                             feed_dict={self.dnd_value_cond: [0],
+                                        self.dnd_value_update: [update_value],
+                                        self.dnd_write_index: gather_indices})
+            write_indices = [[[action, dnd_gather_ind]]]  # itt viszont jó ha nem az action az ucsó dimenzió
+            # a square_diff esetében is lefuttatjuk a state_embeddinget, van duplikáció?
+            self.session.run(self.dnd_key_write, feed_dict={self.dnd_write_index: write_indices})
         else:
             last_item = self._dnd_order[action].peek_last_item()
             del self._dnd_order[action][last_item[0]]
@@ -196,7 +199,9 @@ class NECAgent:
             self.session.run(self.dnd_value_write,
                              feed_dict={self.dnd_value_cond: [1],
                                         self.dnd_value_update:[q_n],
-                                        self.dnd_write_index:[[[last_item[1], 1, action]]]})
+                                        self.dnd_write_index:[[[[last_item[1], 1, action]]]]})
+            write_indices = [[[action, last_item[1]]]] #itt viszont jó ha nem az action az ucsó dimenzió
+            self.session.run(self.dnd_key_write, feed_dict={self.dnd_write_index: write_indices})
             #AZÉRT ÁT KELL MAJD NÉZNI MERT LEHET ELKURESZOLTAM VALAMIT
 
 def _ann_gradient(op, grad):
