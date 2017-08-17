@@ -74,8 +74,8 @@ class NECAgent:
                                        lambda: tf.scatter_nd_add(self.dnd_values, self.dnd_write_index,
                                                                  self.dnd_value_update))
 
-        self.dnd_gather_index = tf.placeholder(tf.int32, None, name="dnd_gather_index")
-        self.dnd_gather_value = tf.gather(self.dnd_values, self.dnd_gather_index)
+        #self.dnd_gather_index = tf.placeholder(tf.int32, None, name="dnd_gather_index")
+        #self.dnd_gather_value = tf.gather(self.dnd_values, self.dnd_gather_index)
 
         self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], [tf.int32, tf.int32],
                                   name="ann_search", grad=_ann_gradient)
@@ -183,7 +183,7 @@ class NECAgent:
         if state_hash in self._dnd_order[action]:
             dnd_gather_ind = self._dnd_order[action][state_hash] # itt a visszakapott indexet olyanna kell tenni hogy a tf.gather beszopkodja
             gather_indices = [[[[dnd_gather_ind, 1, action]]]]  # ha mar atirodik a dnd shape, meg ennek a shapje is lehet hogy szar
-            dnd_q_value = self.session.run(self.dnd_gather_value, feed_dict={self.dnd_gather_index: gather_indices})
+            dnd_q_value = self.session.run(self.nn_state_values, feed_dict={self.ann_search: gather_indices})
             update_value = self.tab_alpha*(q_n - dnd_q_value)
             self.session.run(self.dnd_value_write,
                              feed_dict={self.dnd_value_cond: [0],
