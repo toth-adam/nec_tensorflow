@@ -46,19 +46,25 @@ class NECAgent:
                                     name="DND_keys")
         self.dnd_values = tf.Variable(tf.zeros([self.number_of_actions, dnd_max_memory, 1]), name="DND_values")
 
-        # TODO: We have to stack exactly 4 frames now to be able to feed it into self.state (4 channel)
+        # Always better to use smaller kernel size! These layers are from OpenAI
+        # Learning Atari: An Exploration of the A3C Reinforcement
+        # TODO: USE 1x1 kernels-bottleneck, CS231n Winter 2016: Lecture 11 from 29 minutes
+
         self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
                                  inputs=self.state, num_outputs=32,
-                                 kernel_size=[8, 8], stride=[4, 4], padding='VALID')
+                                 kernel_size=[3, 3], stride=[2, 2], padding='SAME')
         self.conv2 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.conv1, num_outputs=16,
-                                 kernel_size=[4, 4], stride=[2, 2], padding='VALID')
+                                 inputs=self.conv1, num_outputs=32,
+                                 kernel_size=[3, 3], stride=[2, 2], padding='SAME')
         self.conv3 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.conv2, num_outputs=16,
-                                 kernel_size=[3, 3], stride=[1, 1], padding='VALID')
+                                 inputs=self.conv2, num_outputs=32,
+                                 kernel_size=[3, 3], stride=[2, 2], padding='SAME')
+        self.conv4 = slim.conv2d(activation_fn=tf.nn.elu,
+                                 inputs=self.conv3, num_outputs=32,
+                                 kernel_size=[3, 3], stride=[2, 2], padding='SAME')
 
         # TODO: This is the final fully connected layer
-        self.state_embedding = slim.fully_connected(slim.flatten(self.conv3), self.fully_connected_neuron,
+        self.state_embedding = slim.fully_connected(slim.flatten(self.conv4), self.fully_connected_neuron,
                                                     activation_fn=tf.nn.elu)
 
         self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
