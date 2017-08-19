@@ -26,7 +26,8 @@ class NECAgent:
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
 
-        self.fully_connected_neuron = 5
+        self.fully_connected_neuron = 3
+        self.dnd_max_memory = dnd_max_memory
         self._dnd_order = {k: LRU(dnd_max_memory) for k in action_vector}
 
         # Tensorflow Session object
@@ -44,7 +45,7 @@ class NECAgent:
         # TODO: Át kell írni a shape-t
         self.dnd_keys = tf.Variable(tf.random_normal([self.number_of_actions, dnd_max_memory, self.fully_connected_neuron]),
                                     name="DND_keys")
-        self.dnd_values = tf.Variable(tf.zeros([self.number_of_actions, dnd_max_memory, 1]), name="DND_values")
+        self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, dnd_max_memory, 1]), name="DND_values")
 
         # Always better to use smaller kernel size! These layers are from OpenAI
         # Learning Atari: An Exploration of the A3C Reinforcement
@@ -83,7 +84,7 @@ class NECAgent:
         #self.dnd_gather_index = tf.placeholder(tf.int32, None, name="dnd_gather_index")
         #self.dnd_gather_value = tf.gather(self.dnd_values, self.dnd_gather_index)
 
-        self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], [tf.int32, tf.int32],
+        self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], tf.int32,
                                   name="ann_search", grad=_ann_gradient)
 
         self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
@@ -99,14 +100,16 @@ class NECAgent:
 
         # DND calculation
         # tf.expand_dims azért kell, hogy a különböző DND kulcsokból ugyanazt kivonjuk többször (5-ös képlet)
-        square_diff = tf.square(self.nn_state_embeddings - tf.expand_dims(self.state_embedding, 1))
+        self.square_diff = tf.square(tf.expand_dims(self.state_embedding, 1) - self.nn_state_embeddings)
         # Nem tudom miért kell a delta-t listába tenni, első futtatásnál kiderül majd
-        distances = tf.reduce_sum(square_diff, axis=2) + [self.delta]
-        weightings = 1.0 / distances
+        self.distances = tf.reduce_sum(self.square_diff, axis=2) + self.delta
+        self.weightings = 1.0 / self.distances
         # A normalised_weightings a 2-es képlet
-        normalised_weightings = weightings / tf.reduce_sum(weightings, axis=1, keep_dims=True)
+        self.normalised_weightings = self.weightings / tf.reduce_sum(self.weightings, axis=1, keep_dims=True)
         # Ez az 1-es képlet
-        self.pred_q_values = tf.reduce_sum(self.nn_state_values * normalised_weightings, axis=1,
+        self.sq = tf.squeeze(self.nn_state_values, axis=2)
+        self.miakurvaanyad = self.sq * self.normalised_weightings
+        self.pred_q_values = tf.reduce_sum(self.sq * self.normalised_weightings, axis=1,
                                            name="predicted_q_values")
         self.predicted_q = tf.argmax(self.pred_q_values, name="predicted_q")
 
@@ -148,7 +151,7 @@ class NECAgent:
         pred_q_values = self.session.run(self.pred_q_values, feed_dict={self.state: processed_state})
 
         # Choose the random action
-        if np.random.random_sample() < curr_epsilon():  # TODO: step_nr nincs inicializálva!!!
+        if np.random.random_sample() < self.curr_epsilon():  # TODO: step_nr nincs inicializálva!!!
             action = np.random.choice(self.action_vector)
         # Choose the greedy action
         else:
@@ -161,14 +164,8 @@ class NECAgent:
     def test_ann_indices(self, state):
         return self.session.run(self.nn_state_embeddings, feed_dict={self.state: state})
 
-    def get_state_embeddings(self, state):
-        return self.session.run(self.state_embedding, feed_dict={self.state: state})
-
-    def get_embeddings_and_q_values(self, state, actions):
-        # This returns a len=2 list: 1st: nd-array representing the state-embedding
-        #                            2nd: len=len(actions) list with the Q values for the actions
-        return self.session.run([self.state_embedding, self.pred_q_values], feed_dict={self.state: state,
-                                                                                       self.action: actions})
+    def test_ann_indices_values(self, state):
+        return self.session.run(self.nn_state_values, feed_dict={self.state: state})
 
     def reset(self):
         pass
@@ -182,33 +179,33 @@ class NECAgent:
         return eps
 
     def _search_ann(self, search_key, dnd_keys):
-        return [[[0, 1], [1, 0]], [[0, 0], [1, 1]]]
+        return np.asarray([[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]])
         # return [[[0, 0], [0, 2], [1, 0], [1, 2], [2, 0], [2, 2]]]
 
-    def tabular_like_update(self, state_hash, action, q_n):
+    def tabular_like_update(self, state, state_hash, action, q_n):
         if state_hash in self._dnd_order[action]:
-            dnd_gather_ind = self._dnd_order[action][state_hash] # itt a visszakapott indexet olyanna kell tenni hogy a tf.gather beszopkodja
-            gather_indices = [[[[dnd_gather_ind, 1, action]]]]  # ha mar atirodik a dnd shape, meg ennek a shapje is lehet hogy szar
-            dnd_q_value = self.session.run(self.nn_state_values, feed_dict={self.ann_search: gather_indices})
+            cond = 0
+            dnd_gather_ind = self._dnd_order[action][state_hash]
+            indices = np.array([[[action, dnd_gather_ind]]])
+            dnd_q_value = self.session.run(self.nn_state_values, feed_dict={self.ann_search: indices})
             update_value = self.tab_alpha*(q_n - dnd_q_value)
-            self.session.run(self.dnd_value_write,
-                             feed_dict={self.dnd_value_cond: [0],
-                                        self.dnd_value_update: [update_value],
-                                        self.dnd_write_index: gather_indices})
-            write_indices = [[[action, dnd_gather_ind]]]  # itt viszont jó ha nem az action az ucsó dimenzió
-            # a square_diff esetében is lefuttatjuk a state_embeddinget, van duplikáció?
-            self.session.run(self.dnd_key_write, feed_dict={self.dnd_write_index: write_indices})
+
         else:
-            last_item = self._dnd_order[action].peek_last_item()
-            del self._dnd_order[action][last_item[0]]
-            self._dnd_order[action][state_hash] = last_item[1]
-            self.session.run(self.dnd_value_write,
-                             feed_dict={self.dnd_value_cond: [1],
-                                        self.dnd_value_update:[q_n],
-                                        self.dnd_write_index:[[[[last_item[1], 1, action]]]]})
-            write_indices = [[[action, last_item[1]]]] #itt viszont jó ha nem az action az ucsó dimenzió
-            self.session.run(self.dnd_key_write, feed_dict={self.dnd_write_index: write_indices})
-            #AZÉRT ÁT KELL MAJD NÉZNI MERT LEHET ELKURESZOLTAM VALAMIT
+            cond = 1
+            if len(self._dnd_order[action]) < self.dnd_max_memory:
+                item = len(self._dnd_order[action])
+            else:
+                _, item = self._dnd_order[action].peek_last_item()
+            self._dnd_order[action][state_hash] = item
+            indices = np.array([[[action, item]]])
+            update_value = q_n
+
+        self.session.run([self.dnd_value_write, self.dnd_key_write],
+                         feed_dict={self.dnd_value_cond: [cond],
+                                    self.dnd_value_update: np.array([update_value]),
+                                    self.dnd_write_index: indices,
+                                    self.state: state})
+
 
 def _ann_gradient(op, grad):
     return grad
@@ -244,6 +241,7 @@ def transform_array_to_tuple(tf_array):
 
 if __name__ == "__main__":
     with tf.Session() as sess:
+        tf.set_random_seed(1)
         agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=10)
 
         # tf.summary.FileWriter("c:\\Work\\Coding\\temp\\", graph=sess.graph)
@@ -251,16 +249,40 @@ if __name__ == "__main__":
         # print(ops.get_gradient_function(agent.ann_search.op))
         #
         # print(tf.trainable_variables())
+        np.random.seed(1)
         fake_frame = np.random.rand(1, 84, 84, 2)
+        # print(fake_frame)
 
         # print(sess.run(agent.state_embedding, feed_dict={agent.state: fake_frame}))
 
         # print(agent._write_dnd(fake_frame))
 
-        print(agent.dnd_keys.eval())
+        # print(agent.dnd_values.eval())
 
-        print("kaki")
+        # print("kaki")
 
-        print(agent.test_ann_indices(fake_frame))
+
+
+        #print(agent.get_action(fake_frame))
 
         # print(agent.get_action(fake_frame))
+
+        s_e, dnd_keys, dist, w, nw, sq, pq, k = sess.run([agent.state_embedding, agent.nn_state_embeddings, agent.distances, agent.weightings, agent.normalised_weightings, agent.sq, agent.pred_q_values, agent.miakurvaanyad], feed_dict={agent.state: fake_frame})
+
+        print(s_e, "\n####")
+        print(dnd_keys, "\n####")
+        print(dist, "\n####")
+        print(w, "\n####")
+        print("norm_wei", nw, "\n####")
+        print(agent.test_ann_indices_values(fake_frame))
+
+        print("pred_q", pq, "\n####")
+
+        print(sq,"\n K")
+        print(k)
+
+        print(sess.run(agent.predicted_q, feed_dict={agent.state: fake_frame}))
+
+
+
+
