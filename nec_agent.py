@@ -102,7 +102,7 @@ class NECAgent:
         # tf.expand_dims azért kell, hogy a különböző DND kulcsokból ugyanazt kivonjuk többször (5-ös képlet)
         self.square_diff = tf.square(tf.expand_dims(self.state_embedding, 1) - self.nn_state_embeddings)
         # Nem tudom miért kell a delta-t listába tenni, első futtatásnál kiderül majd
-        self.distances = tf.reduce_sum(self.square_diff, axis=2) + self.delta
+        self.distances = tf.sqrt(tf.reduce_sum(self.square_diff, axis=2)) + self.delta
         self.weightings = 1.0 / self.distances
         # A normalised_weightings a 2-es képlet
         self.normalised_weightings = self.weightings / tf.reduce_sum(self.weightings, axis=1, keep_dims=True)
@@ -271,7 +271,7 @@ if __name__ == "__main__":
 
         print(s_e, "\n####")
         print(dnd_keys, "\n####")
-        print(dist, "\n####")
+        print("dist", dist, "\n####")
         print(w, "\n####")
         print("norm_wei", nw, "\n####")
         print(agent.test_ann_indices_values(fake_frame))
