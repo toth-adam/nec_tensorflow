@@ -100,18 +100,18 @@ class NECAgent:
 
         # DND calculation
         # tf.expand_dims azért kell, hogy a különböző DND kulcsokból ugyanazt kivonjuk többször (5-ös képlet)
-        self.square_diff = tf.square(tf.expand_dims(self.state_embedding, 1) - self.nn_state_embeddings)
+        self.square_diff = tf.square(tf.expand_dims(self.state_embedding, axis=0) - self.nn_state_embeddings)
         # Nem tudom miért kell a delta-t listába tenni, első futtatásnál kiderül majd
-        self.distances = tf.sqrt(tf.reduce_sum(self.square_diff, axis=2)) + self.delta
+        self.distances = tf.sqrt(tf.reduce_sum(self.square_diff, axis=3)) + self.delta
         self.weightings = 1.0 / self.distances
         # A normalised_weightings a 2-es képlet
-        self.normalised_weightings = self.weightings / tf.reduce_sum(self.weightings, axis=1, keep_dims=True)
+        self.normalised_weightings = self.weightings / tf.reduce_sum(self.weightings, axis=2, keep_dims=True)
         # Ez az 1-es képlet
-        self.sq = tf.squeeze(self.nn_state_values, axis=2)
+        self.sq = tf.squeeze(self.nn_state_values, axis=3)
         self.miakurvaanyad = self.sq * self.normalised_weightings
-        self.pred_q_values = tf.reduce_sum(self.sq * self.normalised_weightings, axis=1,
+        self.pred_q_values = tf.reduce_sum(self.sq * self.normalised_weightings, axis=2,
                                            name="predicted_q_values")
-        self.predicted_q = tf.argmax(self.pred_q_values, name="predicted_q")
+        self.predicted_q = tf.argmax(self.pred_q_values, axis=1, name="predicted_q")
 
         # Ennek egy vektornak kell lennie. pl: [1, 0, 0]
         self.action = tf.placeholder(tf.int32, [None], name="action")
@@ -179,7 +179,7 @@ class NECAgent:
         return eps
 
     def _search_ann(self, search_key, dnd_keys):
-        return np.asarray([[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]])
+        return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
         # return [[[0, 0], [0, 2], [1, 0], [1, 2], [2, 0], [2, 2]]]
 
     def tabular_like_update(self, state, state_hash, action, q_n):
@@ -250,11 +250,11 @@ if __name__ == "__main__":
         #
         # print(tf.trainable_variables())
         np.random.seed(1)
-        fake_frame = np.random.rand(1, 84, 84, 2)
+        fake_frame = np.random.rand(2, 84, 84, 2)
         # print(fake_frame)
 
-        # print(sess.run(agent.state_embedding, feed_dict={agent.state: fake_frame}))
-
+        print(sess.run(agent.state_embedding, feed_dict={agent.state: fake_frame}))
+        print(agent.test_ann_indices(fake_frame))
         # print(agent._write_dnd(fake_frame))
 
         # print(agent.dnd_values.eval())
@@ -265,8 +265,8 @@ if __name__ == "__main__":
 
         #print(agent.get_action(fake_frame))
 
-        # print(agent.get_action(fake_frame))
-
+        # # print(agent.get_action(fake_frame))
+        #
         s_e, dnd_keys, dist, w, nw, sq, pq, k = sess.run([agent.state_embedding, agent.nn_state_embeddings, agent.distances, agent.weightings, agent.normalised_weightings, agent.sq, agent.pred_q_values, agent.miakurvaanyad], feed_dict={agent.state: fake_frame})
 
         print(s_e, "\n####")
