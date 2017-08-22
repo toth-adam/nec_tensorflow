@@ -1,9 +1,10 @@
 import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
-from tensorflow.python.framework import ops
 from scipy import misc
 from lru import LRU
+from scipy.spatial.ckdtree import cKDTree
+import time
 
 
 class NECAgent:
@@ -26,9 +27,9 @@ class NECAgent:
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
 
-        self.fully_connected_neuron = 3
-        self.dnd_max_memory = dnd_max_memory
-        self._dnd_order = {k: LRU(dnd_max_memory) for k in action_vector}
+        self.fully_connected_neuron = 16
+        self.dnd_max_memory = int(dnd_max_memory)
+        self._dnd_order = {k: LRU(self.dnd_max_memory) for k in action_vector}
 
         # Tensorflow Session object
         self.session = tf_session
@@ -40,12 +41,12 @@ class NECAgent:
         # Without frame stacking
         # self.state = tf.placeholder(tf.float32, name="state")
         # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
-        self.state = tf.placeholder(shape=[None, 84, 84, 2], dtype=tf.float32, name="state")
+        self.state = tf.placeholder(shape=[None, 84, 84, 4], dtype=tf.float32, name="state")
 
         # TODO: Át kell írni a shape-t
-        self.dnd_keys = tf.Variable(tf.random_normal([self.number_of_actions, dnd_max_memory, self.fully_connected_neuron]),
+        self.dnd_keys = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
                                     name="DND_keys")
-        self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, dnd_max_memory, 1]), name="DND_values")
+        self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, 1]), name="DND_values")
 
         # Always better to use smaller kernel size! These layers are from OpenAI
         # Learning Atari: An Exploration of the A3C Reinforcement
@@ -100,16 +101,16 @@ class NECAgent:
 
         # DND calculation
         # tf.expand_dims azért kell, hogy a különböző DND kulcsokból ugyanazt kivonjuk többször (5-ös képlet)
-        self.square_diff = tf.square(tf.expand_dims(self.state_embedding, axis=0) - self.nn_state_embeddings)
+        self.expand_dims = tf.expand_dims(tf.expand_dims(self.state_embedding, axis=1), axis=1)
+        self.square_diff = tf.square(self.expand_dims - self.nn_state_embeddings)
         # Nem tudom miért kell a delta-t listába tenni, első futtatásnál kiderül majd
         self.distances = tf.sqrt(tf.reduce_sum(self.square_diff, axis=3)) + self.delta
         self.weightings = 1.0 / self.distances
         # A normalised_weightings a 2-es képlet
         self.normalised_weightings = self.weightings / tf.reduce_sum(self.weightings, axis=2, keep_dims=True)
         # Ez az 1-es képlet
-        self.sq = tf.squeeze(self.nn_state_values, axis=3)
-        self.miakurvaanyad = self.sq * self.normalised_weightings
-        self.pred_q_values = tf.reduce_sum(self.sq * self.normalised_weightings, axis=2,
+        self.squeeze = tf.squeeze(self.nn_state_values, axis=3)
+        self.pred_q_values = tf.reduce_sum(self.squeeze * self.normalised_weightings, axis=2,
                                            name="predicted_q_values")
         self.predicted_q = tf.argmax(self.pred_q_values, axis=1, name="predicted_q")
 
@@ -178,9 +179,29 @@ class NECAgent:
             eps = 0.001
         return eps
 
-    def _search_ann(self, search_key, dnd_keys):
-        return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
-        # return [[[0, 0], [0, 2], [1, 0], [1, 2], [2, 0], [2, 2]]]
+    def _search_ann(self, search_keys, dnd_keys):
+        # rebuild KDTree
+        anns = [cKDTree(keys, compact_nodes=True, balanced_tree=True) for keys in dnd_keys]
+
+        # Query
+        dist_indices = [ann.query(search_keys, k=50, eps=0, p=2, n_jobs=-1) for ann in anns]
+        indices = np.asarray([action[1] for action in dist_indices])
+
+        # for i, act_ind in enumerate(indices):
+        l = []
+        for batch_size in range(len(search_keys)):
+            l2 = []
+            for action, action_specific_row in enumerate(indices):
+                row = action_specific_row[batch_size]
+                l3 = []
+                for index in row:
+                    l3.append([action, index])
+                l2.append(l3)
+            l.append(l2)
+
+        return np.asarray(l)
+
+        # return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
 
     def tabular_like_update(self, state, state_hash, action, q_n):
         if state_hash in self._dnd_order[action]:
@@ -242,7 +263,7 @@ def transform_array_to_tuple(tf_array):
 if __name__ == "__main__":
     with tf.Session() as sess:
         tf.set_random_seed(1)
-        agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=10)
+        agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=5e5)
 
         # tf.summary.FileWriter("c:\\Work\\Coding\\temp\\", graph=sess.graph)
         #
@@ -250,11 +271,12 @@ if __name__ == "__main__":
         #
         # print(tf.trainable_variables())
         np.random.seed(1)
-        fake_frame = np.random.rand(2, 84, 84, 2)
+        # fake_frame = np.random.rand(84, 84, 4)
+        # two_fake_frames = np.array([fake_frame])
         # print(fake_frame)
 
-        print(sess.run(agent.state_embedding, feed_dict={agent.state: fake_frame}))
-        print(agent.test_ann_indices(fake_frame))
+        # print(sess.run(agent.state_embedding, feed_dict={agent.state: fake_frame}))
+        # print(agent.test_ann_indices(fake_frame))
         # print(agent._write_dnd(fake_frame))
 
         # print(agent.dnd_values.eval())
@@ -267,21 +289,29 @@ if __name__ == "__main__":
 
         # # print(agent.get_action(fake_frame))
         #
-        s_e, dnd_keys, dist, w, nw, sq, pq, k = sess.run([agent.state_embedding, agent.nn_state_embeddings, agent.distances, agent.weightings, agent.normalised_weightings, agent.sq, agent.pred_q_values, agent.miakurvaanyad], feed_dict={agent.state: fake_frame})
+        # s_e, dnd_keys, dist, w, nw, sq, pq = sess.run([agent.state_embedding, agent.nn_state_embeddings, agent.distances, agent.weightings, agent.normalised_weightings, agent.squeeze, agent.pred_q_values], feed_dict={agent.state: two_fake_frames})
 
-        print(s_e, "\n####")
-        print(dnd_keys, "\n####")
-        print("dist", dist, "\n####")
-        print(w, "\n####")
-        print("norm_wei", nw, "\n####")
-        print(agent.test_ann_indices_values(fake_frame))
+        # print(s_e, "\n####")
+        # print("DND__KEYS: ", dnd_keys, "\n####")
+        # print("dist", dist, "\n####")
+        # print(w, "\n####")
+        # print("norm_wei", nw, "\n####")
+        # print(agent.test_ann_indices_values(two_fake_frames))
 
-        print("pred_q", pq, "\n####")
+        # print("pred_q", pq, "\n####")
 
-        print(sq,"\n K")
-        print(k)
+        # print(sq,"\n K")
 
-        print(sess.run(agent.predicted_q, feed_dict={agent.state: fake_frame}))
+        # print(sess.run(agent.predicted_q, feed_dict={agent.state: two_fake_frames}))
+        before = time.time()
+        for _ in range(10):
+            fake_frame = np.random.rand(84, 84, 4)
+            two_fake_frames = np.array([fake_frame])
+            print(str(_) + ".: ", sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames}))
+
+        print("Idő: ", time.time() - before)
+
+
 
 
 
