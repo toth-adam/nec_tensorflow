@@ -30,6 +30,7 @@ class NECAgent:
         self.fully_connected_neuron = 16
         self.dnd_max_memory = int(dnd_max_memory)
         self._dnd_order = {k: LRU(self.dnd_max_memory) for k in action_vector}
+        self._action_state_hash = {k: np.array([]) for k in action_vector}
 
         # Tensorflow Session object
         self.session = tf_session
@@ -199,10 +200,18 @@ class NECAgent:
                 l2.append(l3)
             l.append(l2)
 
+        # update LRU's order only in the action selection forward pass
+        if len(search_keys) == 1:
+            for action_specific_indeces, action_vect_item in zip(indices, self.action_vector):
+                for ind in action_specific_indeces:
+                    st_hash = self._action_state_hash[action_vect_item][ind]
+                    self._dnd_order[action_vect_item][st_hash]
+
         return np.asarray(l)
 
         # return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
 
+    #TODO: Ezt kellene batchelve!!!
     def tabular_like_update(self, state, state_hash, action, q_n):
         if state_hash in self._dnd_order[action]:
             cond = 0
@@ -220,16 +229,13 @@ class NECAgent:
             self._dnd_order[action][state_hash] = item
             indices = np.array([[[action, item]]])
             update_value = q_n
+            self._action_state_hash[action] = state_hash
 
         self.session.run([self.dnd_value_write, self.dnd_key_write],
                          feed_dict={self.dnd_value_cond: [cond],
                                     self.dnd_value_update: np.array([update_value]),
                                     self.dnd_write_index: indices,
                                     self.state: state})
-
-
-def _ann_gradient(op, grad):
-    return grad
 
 
 # Define custom py_func which takes also a grad op as argument:
@@ -304,9 +310,9 @@ if __name__ == "__main__":
 
         # print(sess.run(agent.predicted_q, feed_dict={agent.state: two_fake_frames}))
         before = time.time()
-        for _ in range(10):
+        for _ in range(1):
             fake_frame = np.random.rand(84, 84, 4)
-            two_fake_frames = np.array([fake_frame])
+            two_fake_frames = np.array([fake_frame,fake_frame])
             print(str(_) + ".: ", sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames}))
 
         print("Idő: ", time.time() - before)
