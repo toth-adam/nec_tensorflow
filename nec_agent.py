@@ -27,10 +27,10 @@ class NECAgent:
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
 
-        self.fully_connected_neuron = 16
+        self.fully_connected_neuron = 128
         self.dnd_max_memory = int(dnd_max_memory)
         self._dnd_order = {k: LRU(self.dnd_max_memory) for k in action_vector}
-        self._action_state_hash = {k: np.array([]) for k in action_vector}
+        self._action_state_hash = {k: np.zeros(self.dnd_max_memory, dtype=np.float64) for k in action_vector}
 
         # Tensorflow Session object
         self.session = tf_session
@@ -182,34 +182,36 @@ class NECAgent:
 
     def _search_ann(self, search_keys, dnd_keys):
         # rebuild KDTree
-        anns = [cKDTree(keys, compact_nodes=True, balanced_tree=True) for keys in dnd_keys]
+        #if self.global_step == 0:
+        #    anns = [cKDTree(keys, compact_nodes=True, balanced_tree=True) for keys in dnd_keys]
 
         # Query
-        dist_indices = [ann.query(search_keys, k=50, eps=0, p=2, n_jobs=-1) for ann in anns]
-        indices = np.asarray([action[1] for action in dist_indices])
+        #dist_indices = [ann.query(search_keys, k=50, eps=0, p=2, n_jobs=-1) for ann in anns]
+        #indices = np.asarray([action[1] for action in dist_indices])
 
         # for i, act_ind in enumerate(indices):
-        l = []
-        for batch_size in range(len(search_keys)):
-            l2 = []
-            for action, action_specific_row in enumerate(indices):
-                row = action_specific_row[batch_size]
-                l3 = []
-                for index in row:
-                    l3.append([action, index])
-                l2.append(l3)
-            l.append(l2)
+        #l = []
+        #for batch_size in range(len(search_keys)):
+        #    l2 = []
+        #    for action, action_specific_row in enumerate(indices):
+        #        row = action_specific_row[batch_size]
+        #        l3 = []
+        #        for index in row:
+        #            l3.append([action, index])
+        #        l2.append(l3)
+        #    l.append(l2)
 
         # update LRU's order only in the action selection forward pass
-        if len(search_keys) == 1:
-            for action_specific_indeces, action_vect_item in zip(indices, self.action_vector):
-                for ind in action_specific_indeces:
-                    st_hash = self._action_state_hash[action_vect_item][ind]
-                    self._dnd_order[action_vect_item][st_hash]
+        # if len(search_keys) == 1:
+        #     for action_specific_indeces, action_vect_item in zip(indices, self.action_vector):
+        #         for ind in action_specific_indeces:
+        #             st_hash = self._action_state_hash[action_vect_item][ind]
+        #             self._dnd_order[action_vect_item][st_hash]
 
-        return np.asarray(l)
+        # return np.asarray(l)
 
         # return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
+        return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
 
     #TODO: Ezt kellene batchelve!!!
     def tabular_like_update(self, state, state_hash, action, q_n):
@@ -227,15 +229,21 @@ class NECAgent:
             else:
                 _, item = self._dnd_order[action].peek_last_item()
             self._dnd_order[action][state_hash] = item
-            indices = np.array([[[action, item]]])
+            indices = np.array([[[self.action_vector[action], item]]])
             update_value = q_n
-            self._action_state_hash[action] = state_hash
+            self._action_state_hash[action][item] = state_hash
+            print(indices)
+            print(update_value)
 
-        self.session.run([self.dnd_value_write, self.dnd_key_write],
-                         feed_dict={self.dnd_value_cond: [cond],
-                                    self.dnd_value_update: np.array([update_value]),
-                                    self.dnd_write_index: indices,
-                                    self.state: state})
+        self.session.run(self.dnd_key_write, feed_dict={self.dnd_write_index: indices, self.state: state})
+        self.session.run(self.dnd_value_write,
+                         feed_dict={self.dnd_value_cond: cond,
+                                    self.dnd_value_update: np.array([[[update_value]]]),
+                                    self.dnd_write_index: indices})
+
+
+def _ann_gradient(op, grad):
+    return grad
 
 
 # Define custom py_func which takes also a grad op as argument:
@@ -267,6 +275,7 @@ def transform_array_to_tuple(tf_array):
 
 
 if __name__ == "__main__":
+    # with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as sess:
     with tf.Session() as sess:
         tf.set_random_seed(1)
         agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=5e5)
@@ -310,15 +319,23 @@ if __name__ == "__main__":
 
         # print(sess.run(agent.predicted_q, feed_dict={agent.state: two_fake_frames}))
         before = time.time()
+        agent._write_dnd(5)
         for _ in range(1):
-            fake_frame = np.random.rand(84, 84, 4)
-            two_fake_frames = np.array([fake_frame,fake_frame])
-            print(str(_) + ".: ", sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames}))
+            states, actions, hashes = [], [], []
+
+            for i in range(2):
+                fake_frame = np.random.rand(84, 84, 4)
+                two_fake_frames = np.array([fake_frame])
+                states.append(two_fake_frames)
+                hashes.append(hash(two_fake_frames.tobytes()))
+                actions.append(agent.get_action(two_fake_frames))
+
+            #print(actions, hashes)
+            for s, a, h in zip(states, actions, hashes):
+                agent.tabular_like_update(s, h, a, np.random.rand())
+
+            #agent.tabular_like_update()
+
+            # print(str(_) + ".: ", sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames}))
 
         print("Idő: ", time.time() - before)
-
-
-
-
-
-
