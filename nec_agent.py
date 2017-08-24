@@ -27,7 +27,7 @@ class NECAgent:
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
 
-        self.fully_connected_neuron = 128
+        self.fully_connected_neuron = 16
         self.dnd_max_memory = int(dnd_max_memory)
         self._dnd_order = {k: LRU(self.dnd_max_memory) for k in action_vector}
         self._action_state_hash = {k: np.zeros(self.dnd_max_memory, dtype=np.float64) for k in action_vector}
@@ -276,9 +276,11 @@ def transform_array_to_tuple(tf_array):
 
 if __name__ == "__main__":
     # with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as sess:
+    # with tf.Session(config=tf.ConfigProto(log_device_placement=True, device_count={"GPU": 0})) as sess:
+    # with tf.Session(config=tf.ConfigProto(device_count={"GPU": 0})) as sess:
     with tf.Session() as sess:
         tf.set_random_seed(1)
-        agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=5e5)
+        agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=1e5)
 
         # tf.summary.FileWriter("c:\\Work\\Coding\\temp\\", graph=sess.graph)
         #
@@ -319,20 +321,28 @@ if __name__ == "__main__":
 
         # print(sess.run(agent.predicted_q, feed_dict={agent.state: two_fake_frames}))
         before = time.time()
-        agent._write_dnd(5)
-        for _ in range(1):
-            states, actions, hashes = [], [], []
 
-            for i in range(2):
-                fake_frame = np.random.rand(84, 84, 4)
-                two_fake_frames = np.array([fake_frame])
-                states.append(two_fake_frames)
-                hashes.append(hash(two_fake_frames.tobytes()))
-                actions.append(agent.get_action(two_fake_frames))
+        for _ in range(1000):
+            fake_frame = np.random.rand(84, 84, 4)
+            two_fake_frames = np.array([fake_frame])
+            # print(str(_) + ".: ", sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames}))
+            sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames})
 
-            #print(actions, hashes)
-            for s, a, h in zip(states, actions, hashes):
-                agent.tabular_like_update(s, h, a, np.random.rand())
+
+        # agent._write_dnd(5)
+        # for _ in range(1):
+        #     states, actions, hashes = [], [], []
+        #
+        #     for i in range(2):
+        #         fake_frame = np.random.rand(84, 84, 4)
+        #         two_fake_frames = np.array([fake_frame])
+        #         states.append(two_fake_frames)
+        #         hashes.append(hash(two_fake_frames.tobytes()))
+        #         actions.append(agent.get_action(two_fake_frames))
+        #
+        #     #print(actions, hashes)
+        #     for s, a, h in zip(states, actions, hashes):
+        #         agent.tabular_like_update(s, h, a, np.random.rand())
 
             #agent.tabular_like_update()
 
