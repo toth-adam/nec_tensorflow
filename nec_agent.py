@@ -274,6 +274,7 @@ def transform_array_to_tuple(tf_array):
     return tuple(tf_array)
 
 
+# https://stackoverflow.com/questions/34293714/can-i-measure-the-execution-time-of-individual-operations-with-tensorflow/37774470#37774470
 if __name__ == "__main__":
     # with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as sess:
     # with tf.Session(config=tf.ConfigProto(log_device_placement=True, device_count={"GPU": 0})) as sess:
