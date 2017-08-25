@@ -4,3 +4,4 @@ __pycache__
 pytorch-nec
 Neural-Episodic-Control
 kgraph
+nmslib
