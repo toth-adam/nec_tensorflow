@@ -21,13 +21,15 @@ class NECAgent:
         self.rms_decay = 0.9  # Állítólag DeepMind-os érték
         self.rms_epsilon = 0.01  # Állítólag DeepMind-os érték
 
+        self.adam_learning_rate = 1e-4
+
         #  Tabular like update parameters
         self.tab_alpha = 1e-2
 
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
 
-        self.fully_connected_neuron = 128
+        self.fully_connected_neuron = 64
         self.dnd_max_memory = int(dnd_max_memory)
         self._dnd_order = {k: LRU(self.dnd_max_memory) for k in action_vector}
         self._action_state_hash = {k: np.zeros(self.dnd_max_memory, dtype=np.float64) for k in action_vector}
@@ -72,7 +74,7 @@ class NECAgent:
 
         self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
 
-        self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, self.state_embedding)
+        self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, [self.state_embedding])
 
         self.dnd_value_update = tf.placeholder(tf.float32, None, name="dnd_value_update")
         self.dnd_value_cond = tf.placeholder(tf.int32, None, name="dnd_value_condition")  # 0: hozzáad; 1: felülír
@@ -129,7 +131,7 @@ class NECAgent:
         # Optimizer
         # self.optimizer = tf.train.RMSPropOptimizer(self.rms_learning_rate, decay=self.rms_decay,
         #                                            epsilon=self.rms_epsilon).minimize(total_loss)
-        self.optimizer = tf.train.AdamOptimizer(self.rms_learning_rate).minimize(total_loss)
+        self.optimizer = tf.train.AdamOptimizer(self.adam_learning_rate).minimize(total_loss)
 
         # Global initialization
         self.init_op = tf.global_variables_initializer()
@@ -229,17 +231,22 @@ class NECAgent:
             else:
                 _, item = self._dnd_order[action].peek_last_item()
             self._dnd_order[action][state_hash] = item
-            indices = np.array([[[self.action_vector[action], item]]])
+            indices = np.array([[[self.action_vector.index(action), item]]])
             update_value = q_n
             self._action_state_hash[action][item] = state_hash
-            print(indices)
-            print(update_value)
+            #print(indices)
+            #print(update_value)
 
-        self.session.run(self.dnd_key_write, feed_dict={self.dnd_write_index: indices, self.state: state})
-        self.session.run(self.dnd_value_write,
-                         feed_dict={self.dnd_value_cond: cond,
+        #state_embedding = self.session.run(self.state_embedding, feed_dict={self.state: state})
+        #print("state embedding:", state_embedding)
+        #print("eredit kulcs: ", self.session.run(self.nn_state_embeddings, feed_dict={self.ann_search: indices}))
+        self.session.run([self.dnd_value_write, self.dnd_key_write],
+                         feed_dict={self.state: state,
+                                    self.dnd_value_cond: cond,
                                     self.dnd_value_update: np.array([[[update_value]]]),
                                     self.dnd_write_index: indices})
+        #print("update után: ", self.session.run(self.nn_state_embeddings, feed_dict={self.ann_search: indices}))
+
 
 
 def _ann_gradient(op, grad):
@@ -278,7 +285,7 @@ if __name__ == "__main__":
     # with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as sess:
     with tf.Session() as sess:
         tf.set_random_seed(1)
-        agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=5e5)
+        agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=1e5)
 
         # tf.summary.FileWriter("c:\\Work\\Coding\\temp\\", graph=sess.graph)
         #
@@ -319,21 +326,28 @@ if __name__ == "__main__":
 
         # print(sess.run(agent.predicted_q, feed_dict={agent.state: two_fake_frames}))
         before = time.time()
-        agent._write_dnd(5)
+        # agent._write_dnd(5)
         for _ in range(1):
             states, actions, hashes = [], [], []
 
-            for i in range(2):
+            for i in range(1000):
                 fake_frame = np.random.rand(84, 84, 4)
                 two_fake_frames = np.array([fake_frame])
                 states.append(two_fake_frames)
                 hashes.append(hash(two_fake_frames.tobytes()))
                 actions.append(agent.get_action(two_fake_frames))
+                if i>16 and i%16 == 0:
+                    sess.run(agent.optimizer, feed_dict={agent.state: np.array(states[:32]).reshape((32, 84, 84, 4)),
+                                                        agent.action: actions[:32],
+                                                        agent.target_q: actions[:32]})
 
             #print(actions, hashes)
             for s, a, h in zip(states, actions, hashes):
                 agent.tabular_like_update(s, h, a, np.random.rand())
 
+            #sess.run(agent.optimizer, feed_dict={agent.state: np.array([states]).reshape((1000,84,84,4)),
+            #                                     agent.action: actions,
+            #                                     agent.target_q: actions})
             #agent.tabular_like_update()
 
             # print(str(_) + ".: ", sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames}))

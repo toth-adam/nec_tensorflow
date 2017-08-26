@@ -9,13 +9,14 @@ import time
 
 np.random.seed(1)
 
-data = np.random.rand(10, 20).astype(np.float32)
+data = np.array([[1,1,1],[2,2,2]], dtype=np.float32)
 data_t = data
+data2 = np.array([[3.5,3.5,3.5],[5,5,5]], dtype=np.float32)
 
 print(data)
 print(data_t)
 
-query = np.ones(20, dtype=np.float32)
+query = np.array([3,3,3], dtype=np.float32)
 
 # initialize a new index, using a HNSW index on Cosine Similarity
 indexing_time1 = time.time()
@@ -32,10 +33,15 @@ indexing_time2 = time.time()
 # using a pool of 4 threads to compute
 # neighbours = index.knnQueryBatch(data, k=10, num_threads=4)
 
+ids, distances = index.knnQuery(query, k=1)
+
+print(ids, distances, data[ids[0]])
+print("----------------")
+index.addDataPointBatch(data2)
+index.createIndex({'post': 2})
 ids, distances = index.knnQuery(query, k=3)
 
-print(ids, distances)
-
+print(ids, distances, data[ids[0]])
 # t1 = time.time()
 #
 # neighbours = index.knnQueryBatch(data[:10000], k=50, num_threads=4)
@@ -51,6 +57,6 @@ print(ids, distances)
 #
 # ids, distances = index.knnQuery(data_2[0], k=10)
 
-print(data_t[4])
-print(np.linalg.norm(data_t[4] - query))
-print(np.sqrt(np.sum((data_t[4] - query) **2)))
+#print(data_t[4])
+#print(np.linalg.norm(data_t[4] - query))
+#print(np.sqrt(np.sum((data_t[4] - query) **2)))
