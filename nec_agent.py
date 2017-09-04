@@ -3,12 +3,15 @@ import tensorflow as tf
 import tensorflow.contrib.slim as slim
 from scipy import misc
 from lru import LRU
-from scipy.spatial.ckdtree import cKDTree
+from pyflann import FLANN
 import time
 
 
 class NECAgent:
     def __init__(self, tf_session, action_vector, dnd_max_memory=500000):
+
+        # ANN Search index
+        self.anns = {k: AnnSearch(50, dnd_max_memory) for k in action_vector}
 
         # TODO: parameters
         self.delta = 1e-3
@@ -31,14 +34,17 @@ class NECAgent:
 
         self.fully_connected_neuron = 64
         self.dnd_max_memory = int(dnd_max_memory)
-        self._dnd_order = {k: LRU(self.dnd_max_memory) for k in action_vector}
-        self._action_state_hash = {k: np.zeros(self.dnd_max_memory, dtype=np.float64) for k in action_vector}
+        #AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben updatelni kell
+        #dict1 az state_hash:tf_index ez ahhoz kell hogy megnezzem hogy benne van-e tehát milyen legyen a tab_update és hogy melyik indexre a DND-ben
+        self.tf_index__state_hash = {k: LRU(self.dnd_max_memory) for k in action_vector}
+        self.state_hash__tf_index = {k: {} for k in action_vector}
 
         # Tensorflow Session object
         self.session = tf_session
 
         # Global step
         self.global_step = 0
+        self._is_search_ann_first_run = {act: True for act in action_vector}
 
         # Tensorflow graph building
         # Without frame stacking
@@ -183,13 +189,19 @@ class NECAgent:
         return eps
 
     def _search_ann(self, search_keys, dnd_keys):
-        # rebuild KDTree
-        #if self.global_step == 0:
-        #    anns = [cKDTree(keys, compact_nodes=True, balanced_tree=True) for keys in dnd_keys]
+        #for action, is_search_ann_first_run in self._is_search_ann_first_run.items():
+        #    if is_search_ann_first_run:
+        #        self.anns[action].build_index()
 
-        # Query
-        #dist_indices = [ann.query(search_keys, k=50, eps=0, p=2, n_jobs=-1) for ann in anns]
-        #indices = np.asarray([action[1] for action in dist_indices])
+        # Ezt át kell írni batches-re
+        batch_indices = []
+        for act, ann in self.anns.items():
+            indices = ann.query(search_keys)
+            # action_indices = np.full(len(indices), act)
+            # tf_indices = np.empty((indices.size + action_indices.size,), dtype=a.dtype)
+            # tf_indices[0::2] = action_indices
+            # tf_indices[1::2] = indices
+            # tf_indices.reshape(2, len(indices))
 
         # for i, act_ind in enumerate(indices):
         #l = []
@@ -213,24 +225,24 @@ class NECAgent:
         # return np.asarray(l)
 
         # return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
-        return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
+        return np.asarray(batch_indices)
 
     #TODO: Ezt kellene batchelve!!!
     def tabular_like_update(self, state, state_hash, action, q_n):
-        if state_hash in self._dnd_order[action]:
+        if state_hash in self.tf_index__state_hash[action]:
             cond = 0
-            dnd_gather_ind = self._dnd_order[action][state_hash]
+            dnd_gather_ind = self.tf_index__state_hash[action][state_hash]
             indices = np.array([[[action, dnd_gather_ind]]])
             dnd_q_value = self.session.run(self.nn_state_values, feed_dict={self.ann_search: indices})
             update_value = self.tab_alpha*(q_n - dnd_q_value)
 
         else:
             cond = 1
-            if len(self._dnd_order[action]) < self.dnd_max_memory:
-                item = len(self._dnd_order[action])
+            if len(self.tf_index__state_hash[action]) < self.dnd_max_memory:
+                item = len(self.tf_index__state_hash[action])
             else:
-                _, item = self._dnd_order[action].peek_last_item()
-            self._dnd_order[action][state_hash] = item
+                _, item = self.tf_index__state_hash[action].peek_last_item()
+            self.tf_index__state_hash[action][state_hash] = item
             indices = np.array([[[self.action_vector.index(action), item]]])
             update_value = q_n
             self._action_state_hash[action][item] = state_hash
@@ -248,6 +260,38 @@ class NECAgent:
         #print("update után: ", self.session.run(self.nn_state_embeddings, feed_dict={self.ann_search: indices}))
 
 
+class AnnSearch:
+
+    def __init__(self, neighbors_number, dnd_max_memory):
+        self.ann = FLANN()
+        self.neighbors_number = neighbors_number
+        self._ann_index__tf_index = {}
+        self.dnd_max_memory = int(dnd_max_memory) - 1
+        self._added_points = 0
+        self.flann_params = None
+
+    def add_state_embedding(self, state_embedding):
+        self.ann.add_points(state_embedding)
+
+    def update_ann(self, tf_var_dnd_index, state_embedding):
+        # A tf_var_dnd_index alapján kell törölnünk a Flann indexéből. Ez csak abban az esetben fog
+        # kelleni, ha nincs index build és egy olyan index jön be, amihez tartozó state_embeddeinget már egyszer hozzáadtam.
+        flann_index = [k for k, v in self._ann_index__tf_index.items() if v == tf_var_dnd_index][0]
+        self.ann.remove_point(flann_index)
+        self.add_state_embedding(state_embedding)
+        self._added_points += 1
+        self._ann_index__tf_index[self.dnd_max_memory + self._added_points] = tf_var_dnd_index
+
+    def build_index(self, tf_variable_dnd):
+        self.flann_params = self.ann.build_index(tf_variable_dnd, algorithm="kdtree", target_precision=1)
+        self._ann_index__tf_index = {}
+
+    def query(self, state_embeddings):
+        indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
+                                       checks=self.flann_params["checks"])
+
+        tf_var_dnd_indices = [self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for index_row in indices for j in index_row]
+        return tf_var_dnd_indices
 
 def _ann_gradient(op, grad):
     return grad
