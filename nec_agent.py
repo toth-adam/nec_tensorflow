@@ -467,6 +467,8 @@ for i in range(max_ep_num):
             #  játék vége van kiszámolom a disc_rewardokat viszont az elsőnek n_hor darab rewardból
             #  a másodiknak (n_hor-1) darab rewardból, a harmadiknak (n_hor-2) darab rewardból, ésígytovább.
             #  A bootstrap value itt mindig 0 tehát a Q(N) maga a discounted reward. Majd berakosgatom a replay memoryba
+
+            # Itt van lekezelve az, hogy a játék elején Monte-Carlo return-nel számoljuk ki a state-action value-kat.
             q_ns = discount(rewards_deque, gamma)
             j = len(rewards_deque)
             for s, a, q_n in zip(states_list[-j:], actions_list[-j:], q_ns):
