@@ -14,5 +14,7 @@ class ReplayMemory:
         rand_samp_num = np.random.choice(len(self.rep_mem), size=batch_size, replace=False)
         for i in rand_samp_num:
             rand_samp_list.append(self.rep_mem[i])
-        trans_rand_sample = np.asarray(rand_samp_list).T
+        trans_rand_sample = np.array(rand_samp_list).T
+        # TODO: WTF
+        print(trans_rand_sample[0].shape)
         return trans_rand_sample[0], trans_rand_sample[1], trans_rand_sample[2] #  state, action, q_n
