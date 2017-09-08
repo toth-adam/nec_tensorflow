@@ -10,11 +10,7 @@ class ReplayMemory:
         self.rep_mem.append(item)
 
     def get_batch(self, batch_size):
-        rand_samp_list = []
         rand_samp_num = np.random.choice(len(self.rep_mem), size=batch_size, replace=False)
-        for i in rand_samp_num:
-            rand_samp_list.append(self.rep_mem[i])
-        trans_rand_sample = np.array(rand_samp_list).T
-        # TODO: WTF
-        print(trans_rand_sample[0].shape)
-        return trans_rand_sample[0], trans_rand_sample[1], trans_rand_sample[2] #  state, action, q_n
+        rand_samp_list = [self.rep_mem[i] for i in rand_samp_num]
+        trans_rand_sample = list(map(list, zip(*rand_samp_list)))
+        return trans_rand_sample[0], trans_rand_sample[1], trans_rand_sample[2]  # state, action, q_n
