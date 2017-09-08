@@ -91,21 +91,11 @@ class NECAgent:
                                        lambda: tf.scatter_nd_add(self.dnd_values, self.dnd_write_index,
                                                                  self.dnd_value_update))
 
-        #self.dnd_gather_index = tf.placeholder(tf.int32, None, name="dnd_gather_index")
-        #self.dnd_gather_value = tf.gather(self.dnd_values, self.dnd_gather_index)
 
         self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], tf.int32,
                                   name="ann_search", grad=_ann_gradient)
-
         self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
         self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search, name="nn_state_values")
-
-        # Retrieve info from DND dictionary
-        # TODO: Lehet át kell írni a 3. paramétert
-        # embs_and_values = tf.py_func(self._query_dnds, [self.state_embedding, self.action], tf.float32)
-        # # dnd_embeddings-eknek a 50 közeli szomszéd kulcsok kellenek
-        # self.dnd_embeddings = tf.to_float(embs_and_values[0])
-        # self.dnd_values = tf.to_float(embs_and_values[1])
 
 
         # DND calculation
@@ -128,7 +118,6 @@ class NECAgent:
         self.action_onehot = tf.one_hot(self.action, self.number_of_actions)
 
         # Loss Function
-        # TODO: Ez miért stringes float?? miért nem tf.float
         self.target_q = tf.placeholder(tf.float32, [None], name="target_Q")
         self.q_value = tf.reduce_sum(tf.multiply(self.pred_q_values, self.action_onehot))
         self.td_err = tf.subtract(self.target_q, self.q_value, name="td_error")
@@ -155,13 +144,11 @@ class NECAgent:
 
         # Mindegyik action-re megbecsüljük a Q(s_t, a)-t, ezzel fel is töltjük a DND-t
         # Az eredeti paper Algorithm #1  - 2. sora
-        # processed_state = image_preprocessor(state)
-        processed_state = state
 
-        pred_q_values = self.session.run(self.pred_q_values, feed_dict={self.state: processed_state})
+        pred_q_values = self.session.run(self.pred_q_values, feed_dict={self.state: state})
 
         # Choose the random action
-        if np.random.random_sample() < self.curr_epsilon():  # TODO: step_nr nincs inicializálva!!!
+        if np.random.random_sample() < self.curr_epsilon():
             action = np.random.choice(self.action_vector)
         # Choose the greedy action
         else:
@@ -224,8 +211,8 @@ class NECAgent:
 
         # return np.asarray(l)
 
-        # return np.asarray([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
-        return np.asarray(batch_indices)
+        return np.array([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
+        #return np.asarray(batch_indices)
 
     #TODO: Ezt kellene batchelve!!!
     def tabular_like_update(self, state, state_hash, action, q_n):
@@ -374,7 +361,7 @@ if __name__ == "__main__":
         for _ in range(1):
             states, actions, hashes = [], [], []
 
-            for i in range(1000):
+            for i in range(1):
                 fake_frame = np.random.rand(84, 84, 4)
                 two_fake_frames = np.array([fake_frame])
                 states.append(two_fake_frames)
@@ -397,3 +384,78 @@ if __name__ == "__main__":
             # print(str(_) + ".: ", sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames}))
 
         print("Idő: ", time.time() - before)
+
+########################################################################################################################
+from replay_memory import ReplayMemory
+import gym
+import scipy.signal
+from collections import deque
+
+def discount(x, gamma):
+    return scipy.signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
+
+rep_memory = ReplayMemory()
+n_hor = 100
+max_ep_num = 1000000
+gamma = 0.95
+gammas = list(map(lambda x: gamma ** x, range(n_hor)))
+batch_size = 32
+
+env = gym.make('Pong-v0')
+
+for i in range(max_ep_num):
+    rewards_deque = deque(maxlen=n_hor)
+    states_list = []
+    states_hashes_list = []
+    actions_list = []
+    q_n_list = []
+    done = False
+    t = 0
+
+    observation = env.reset()
+    processed_obs = image_preprocessor(observation)
+    agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
+    states_list.append(agent_input)
+    states_hashes_list.append(hash(agent_input.tobytes()))
+    # Ezt is hozzá adódik a replay memoryhoz
+
+    while done is False:
+        action = sess.run(agent.get_action(agent_input))
+        actions_list.append(action)
+
+        observation, reward, done, info = env.step(action)
+        rewards_deque.append(reward)
+
+        if done is False:
+            #  képet megfelelőre alakítom, stackelem majd appendelem és a hash-t is appendelem
+            processed_obs = image_preprocessor(observation)
+            agent_input = frame_stacking(agent_input, processed_obs)
+            states_list.append(agent_input)
+            states_hashes_list.append(hash(agent_input.tobytes()))
+            #  BACKPROP, minden lépésnél???????
+            if agent.global_step > 4999:
+                state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
+                sess.run(agent.optimizer, feed_dict={agent.state: state_batch,
+                                                     agent.action: action_batch,
+                                                     agent.target_q: q_n_batch})
+
+            #  nincs játék vége még és már volt n_hor-nyi lépés akkor kiszámolom a Q(N) értéket és hozzáadom
+            #  a megfelelő vektort a replay memoryhoz
+            if len(rewards_deque) == n_hor:
+                disc_reward = np.dot(rewards_deque, gammas)
+                bootstrap_value = gamma ** n_hor * np.amax(sess.run(agent.pred_q_values,
+                                                   feed_dict={agent.state: states_list[t]}))
+                q_n = disc_reward + bootstrap_value
+                q_n_list.append(q_n)
+                rep_memory.append([states_list[t], actions_list[t], q_n])
+                t += 1
+        else:
+            #  játék vége van kiszámolom a disc_rewardokat viszont az elsőnek n_hor darab rewardból
+            #  a másodiknak (n_hor-1) darab rewardból, a harmadiknak (n_hor-2) darab rewardból, ésígytovább.
+            #  A bootstrap value itt mindig 0 tehát a Q(N) maga a discounted reward. Majd berakosgatom a replay memoryba
+            q_ns = discount(rewards_deque, gamma)
+            for s, a, q_n in zip(states_list[-n_hor:], actions_list[-n_hor:], q_ns):
+                q_n_list.append(q_n)
+                rep_memory.append([s, a, q_n])
+
+    #TODO: Tabular like update
