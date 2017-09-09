@@ -2,6 +2,10 @@ import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 from scipy import misc
+from replay_memory import ReplayMemory
+import gym
+from scipy.signal import lfilter
+from collections import deque
 from lru import LRU
 from pyflann import FLANN
 import time
@@ -32,7 +36,7 @@ class NECAgent:
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
 
-        self.fully_connected_neuron = 64
+        self.fully_connected_neuron = 128
         self.dnd_max_memory = int(dnd_max_memory)
         #AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben updatelni kell
         #dict1 az state_hash:tf_index ez ahhoz kell hogy megnezzem hogy benne van-e tehát milyen legyen a tab_update és hogy melyik indexre a DND-ben
@@ -57,7 +61,7 @@ class NECAgent:
 
         # TODO: Át kell írni a shape-t
         self.dnd_keys = tf.Variable(
-            tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
+            tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron], mean=100000),
             name="DND_keys")
         self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, 1]),
                                       name="DND_values")
@@ -85,16 +89,11 @@ class NECAgent:
 
         self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
 
-        self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, [self.state_embedding])
+        self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, self.state_embedding)
 
         self.dnd_value_update = tf.placeholder(tf.float32, None, name="dnd_value_update")
-        self.dnd_value_cond = tf.placeholder(tf.int32, None, name="dnd_value_condition")  # 0: hozzáad; 1: felülír
 
-        self.dnd_value_write = tf.cond(tf.less(tf.constant(0), self.dnd_value_cond),
-                                       lambda: tf.scatter_nd_update(self.dnd_values, self.dnd_write_index,
-                                                                    self.dnd_value_update),
-                                       lambda: tf.scatter_nd_add(self.dnd_values, self.dnd_write_index,
-                                                                 self.dnd_value_update))
+        self.dnd_value_write = tf.scatter_nd_update(self.dnd_values, self.dnd_write_index, self.dnd_value_update)
 
         self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], tf.int32,
                                   name="ann_search", grad=_ann_gradient)
@@ -192,55 +191,96 @@ class NECAgent:
             indices = ann.query(search_keys)
             # Create numpy array with full of corresponding action vector index
             action_indices = np.full(indices.shape, self.action_vector.index(act))
-            # Create empty array with double length
-            tf_indices = np.empty([indices.shape[0], indices.shape[1] * 2], dtype=indices.dtype)
-            # Összefésüljük az action indexet az annből kijövő indexszel
-            tf_indices[:, 0::2] = action_indices
-            tf_indices[:, 1::2] = indices
-            tf_indices = tf_indices.reshape((indices.shape[0], indices.shape[1], 2))
+            # Riffle two arrays
+            tf_indices = self._riffle_arrays(action_indices, indices)
             batch_indices.append(tf_indices)
+            # Very important part: Modify LRU Order here
+            # Doesn't work without tabular update of course!
+            # TODO: ennek még utána kell nézni - A ReplyaMemoryból vett cuccokra is változtatja a sorrendet -> nem jó
+            # _ = [self.tf_index__state_hash[act][i] for i in indices.ravel()]
         np_batch = np.asarray(batch_indices)
 
         # Olyan alakra hozzuk, ami a gather_nd tf operationhoz kell
-        final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])])
+        final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])], dtype=np.int32)
 
         return final_indices
 
-        # return np.array([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]]])
+        # return np.array([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]],
+        # [[2, 0], [2, 1]]]])
 
-    # TODO: Ezt kellene batchelve!!!
-    def tabular_like_update(self, state, state_hash, action, q_n):
-        action_index = self.action_vector.index(action)
-        if state_hash in self.tf_index__state_hash[action]:
-            cond = 0
-            dnd_gather_ind = self.tf_index__state_hash[action][state_hash]
-            indices = np.array([[[action_index, dnd_gather_ind]]])
-            dnd_q_value = self.session.run(self.nn_state_values, feed_dict={self.ann_search: indices})
-            update_value = self.tab_alpha*(q_n - dnd_q_value)
+    @staticmethod
+    def _riffle_arrays(array_1, array_2):
+        if array_1.shape != array_2.shape:
+            raise ValueError("foscsi")
+        if len(array_1.shape) == 1:
+            array_1 = np.expand_dims(array_1, axis=0)
+            array_2 = np.expand_dims(array_2, axis=0)
 
-        else:
-            cond = 1
-            if len(self.tf_index__state_hash[action]) < self.dnd_max_memory:
-                item = len(self.tf_index__state_hash[action])
-                self._actual_dnd_length[action_index] = item
+        tf_indices = np.empty([array_1.shape[0], array_1.shape[1] * 2], dtype=array_1.dtype)
+        # Összefésüljük az action indexet az annből kijövő indexszel
+        tf_indices[:, 0::2] = array_1
+        tf_indices[:, 1::2] = array_2
+        return tf_indices.reshape((array_1.shape[0], array_1.shape[1], 2))
+
+    def tabular_like_update(self, states, state_hashes, actions, q_ns, index_rebuild=False):
+        # Making np arrays
+        states = np.asarray(states)
+        state_hashes = np.asarray(state_hashes)
+        q_ns = np.asarray(q_ns)
+        actions = np.asarray(actions)
+
+        action_indices = np.asarray([self.action_vector.index(act) for act in actions])
+
+        cond_vector = np.asarray([True if st_h in self.state_hash__tf_index[a] else False
+                                  for st_h, a in zip(state_hashes, actions)])
+
+        batch_update_values = np.empty(q_ns.shape, dtype=np.float32)
+        batch_indices = np.empty((actions.shape[0], 2), dtype=np.int32)
+
+        if np.any(cond_vector):
+            dnd_gather_indices = np.asarray([self.state_hash__tf_index[a][sh]
+                                            for sh, a in zip(state_hashes[cond_vector], actions[cond_vector])])
+            indices = np.squeeze(self._riffle_arrays(action_indices[cond_vector], dnd_gather_indices), axis=0)
+            dnd_q_values = self.session.run(self.nn_state_values, feed_dict={self.ann_search: indices})
+            #print(q_ns[cond_vector], "\n#####",dnd_q_values)
+            batch_update_values[cond_vector] = self.tab_alpha * (q_ns[cond_vector] - dnd_q_values) + dnd_q_values
+            batch_indices[cond_vector] = indices
+
+        sh_not_in_indices = []
+        for act, sh in zip(actions[~cond_vector], state_hashes[~cond_vector]):
+            if len(self.tf_index__state_hash[act]) < self.dnd_max_memory:
+                index = len(self.tf_index__state_hash[act])
+                # self._actual_dnd_length[action_index] = item
             else:
-                _, item = self.tf_index__state_hash[action].peek_last_item()
-            self.tf_index__state_hash[action][state_hash] = item
-            indices = np.array([[[self.action_vector.index(action), item]]])
-            update_value = q_n
-            self._action_state_hash[action][item] = state_hash
-            #print(indices)
-            #print(update_value)
+                index, old_state_hash = self.tf_index__state_hash[act].peek_last_item()
+                del self.state_hash__tf_index[act][old_state_hash]
+            # LRU order stuff
+            self.tf_index__state_hash[act][index] = sh
+            self.state_hash__tf_index[act][sh] = index
+            #
+            sh_not_in_indices.append(index)
 
-        #state_embedding = self.session.run(self.state_embedding, feed_dict={self.state: state})
-        #print("state embedding:", state_embedding)
-        #print("eredit kulcs: ", self.session.run(self.nn_state_embeddings, feed_dict={self.ann_search: indices}))
-        self.session.run([self.dnd_value_write, self.dnd_key_write],
-                         feed_dict={self.state: state,
-                                    self.dnd_value_cond: cond,
-                                    self.dnd_value_update: np.array([[[update_value]]]),
-                                    self.dnd_write_index: indices})
-        #print("update után: ", self.session.run(self.nn_state_embeddings, feed_dict={self.ann_search: indices}))
+        # Create batch indices and update values
+        batch_indices[~cond_vector] = np.squeeze(self._riffle_arrays(action_indices[~cond_vector],
+                                                                     np.asarray(sh_not_in_indices)))
+        batch_update_values[~cond_vector] = q_ns[~cond_vector]
+        batch_update_values = np.expand_dims(batch_update_values, axis=1)
+
+        # Batch tabular update
+        state_embeddings, _, _ = self.session.run([self.state_embedding, self.dnd_value_write, self.dnd_key_write],
+                                                  feed_dict={self.state: states,
+                                                  self.dnd_value_update: batch_update_values,
+                                                  self.dnd_write_index: batch_indices})
+        # TODO: Ez még kell
+        # FLANN Add point - every batch  -- Szét kell szedni minden state embeddinget action csoportokba
+        #for s_e, a in zip(state_embeddings, actions):
+        #   self.anns[a].update_ann(, s_e)
+
+        # FLANN index rebuild, if index_rebuild = True
+        if index_rebuild:
+            dnd_keys = self.session.run(self.dnd_keys)
+            for act, ann in self.anns.items():
+                ann.build_index(dnd_keys[self.action_vector.index(act)])
 
 
 class AnnSearch:
@@ -273,7 +313,8 @@ class AnnSearch:
         indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
                                        checks=self.flann_params["checks"])
 
-        tf_var_dnd_indices = [self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for index_row in indices for j in index_row]
+        tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
+                              for index_row in indices]
         return np.asarray(tf_var_dnd_indices, dtype=np.int32)
 
 
@@ -293,13 +334,13 @@ def py_func(func, inp, Tout, stateful=True, name=None, grad=None):
 
 
 def image_preprocessor(state):
+    state = state[32:195, :, :]
     state = misc.imresize(state, [84, 84])
     # greyscaling and normalizing state
     state = np.dot(state[..., :3], [0.299, 0.587, 0.114]) / 255.0
     return state
 
 
-# TODO: env_reset esetén a kapott observationt stackkelni kell 4szer : np.stack((o_t,o_t,o_t,o_t), axis=2)
 def frame_stacking(s_t, o_t):  # Ahol az "s_t" a korábban stackkelt 4 frame, "o_t" pedig az új observation
     s_t1 = np.append(s_t[:, :, 1:], np.expand_dims(o_t, axis=2), axis=2)
     return s_t1
@@ -309,175 +350,132 @@ def transform_array_to_tuple(tf_array):
     return tuple(tf_array)
 
 
-#if __name__ == "__main__":
-#    # with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as sess:
-#    with tf.Session() as sess:
-#        tf.set_random_seed(1)
-#        agent = NECAgent(sess, [-1, 0, 1], dnd_max_memory=1e5)
-#
-#        # tf.summary.FileWriter("c:\\Work\\Coding\\temp\\", graph=sess.graph)
-#        #
-#        # print(ops.get_gradient_function(agent.ann_search.op))
-#        #
-#        # print(tf.trainable_variables())
-#        np.random.seed(1)
-#        # fake_frame = np.random.rand(84, 84, 4)
-#        # two_fake_frames = np.array([fake_frame])
-#        # print(fake_frame)
-#
-#        # print(sess.run(agent.state_embedding, feed_dict={agent.state: fake_frame}))
-#        # print(agent.test_ann_indices(fake_frame))
-#        # print(agent._write_dnd(fake_frame))
-#
-#        # print(agent.dnd_values.eval())
-#
-#        # print("kaki")
-#
-#
-#
-#        #print(agent.get_action(fake_frame))
-#
-#        # # print(agent.get_action(fake_frame))
-#        #
-#        # s_e, dnd_keys, dist, w, nw, sq, pq = sess.run([agent.state_embedding, agent.nn_state_embeddings, agent.distances, agent.weightings, agent.normalised_weightings, agent.squeeze, agent.pred_q_values], feed_dict={agent.state: two_fake_frames})
-#
-#        # print(s_e, "\n####")
-#        # print("DND__KEYS: ", dnd_keys, "\n####")
-#        # print("dist", dist, "\n####")
-#        # print(w, "\n####")
-#        # print("norm_wei", nw, "\n####")
-#        # print(agent.test_ann_indices_values(two_fake_frames))
-#
-#        # print("pred_q", pq, "\n####")
-#
-#        # print(sq,"\n K")
-#
-#        # print(sess.run(agent.predicted_q, feed_dict={agent.state: two_fake_frames}))
-#        before = time.time()
-#        # agent._write_dnd(5)
-#        for _ in range(1):
-#            states, actions, hashes = [], [], []
-#
-#            for i in range(1):
-#                fake_frame = np.random.rand(84, 84, 4)
-#                two_fake_frames = np.array([fake_frame])
-#                states.append(two_fake_frames)
-#                hashes.append(hash(two_fake_frames.tobytes()))
-#                actions.append(agent.get_action(two_fake_frames))
-#                if i>16 and i%16 == 0:
-#                    sess.run(agent.optimizer, feed_dict={agent.state: np.array(states[:32]).reshape((32, 84, 84, 4)),
-#                                                        agent.action: actions[:32],
-#                                                        agent.target_q: actions[:32]})
-#
-#            #print(actions, hashes)
-#            for s, a, h in zip(states, actions, hashes):
-#                agent.tabular_like_update(s, h, a, np.random.rand())
-#
-#            #sess.run(agent.optimizer, feed_dict={agent.state: np.array([states]).reshape((1000,84,84,4)),
-#            #                                     agent.action: actions,
-#            #                                     agent.target_q: actions})
-#            #agent.tabular_like_update()
-#
-#            # print(str(_) + ".: ", sess.run(agent.pred_q_values, feed_dict={agent.state: two_fake_frames}))
-#
-#        print("Idő: ", time.time() - before)
-
-########################################################################################################################
-from replay_memory import ReplayMemory
-import gym
-import scipy.signal
-from collections import deque
-
-
 def discount(x, gamma):
     a = np.asarray(x)
-    return scipy.signal.lfilter([1], [1, -gamma], a[::-1], axis=0)[::-1]
+    return lfilter([1], [1, -gamma], a[::-1], axis=0)[::-1]
 
-
-session = tf.Session()
-agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100, neighbor_number=10)
-rep_memory = ReplayMemory()
-n_hor = 100
-max_ep_num = 1
-gamma = 0.99
-gammas = list(map(lambda x: gamma ** x, range(n_hor)))
-batch_size = 32
-
-env = gym.make('Pong-v4')
-
-print(session.run(agent.action_onehot, feed_dict={agent.action_index: [0, 2]}))
-
-for i in range(max_ep_num):
-    rewards_deque = deque()
-    states_list = []
-    states_hashes_list = []
-    actions_list = []
-    q_n_list = []
-    done = False
-    mini_game_done = False
-    local_step = 0
+if __name__ == "__main_":
+    session = tf.Session()
+    env = gym.make('Pong-v4')
+    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=1e5, neighbor_number=50)
 
     observation = env.reset()
+    for _ in range(30):
+        observation,_,_,_=env.step(0)
     processed_obs = image_preprocessor(observation)
-    agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
-    states_list.append(agent_input)
-    states_hashes_list.append(hash(agent_input.tobytes()))
-    # Ezt is hozzá adódik a replay memoryhoz
 
-    while not done or not mini_game_done:
-        action = agent.get_action(agent_input)
-        actions_list.append(action)
+    import matplotlib.pyplot as plt
 
-        observation, reward, done, info = env.step(action)
-        rewards_deque.append(reward)
-        local_step += 1
+    plt.imshow(processed_obs, cmap="gray")
+    plt.show()
+    #dnd_q_value, full_dnd = session.run([agent.nn_state_values, agent.dnd_values], feed_dict={agent.ann_search: [[0, 1], [1,0]]})
+    #print(dnd_q_value)
+    ##print("#############x")
+    ##print(full_dnd)
+    #fake_frame = np.random.rand(2, 84, 84, 4)
+#
+    #session.run([agent.dnd_value_write, agent.dnd_key_write],
+    #                 feed_dict={agent.state: fake_frame,
+    #                            agent.dnd_value_update: np.asarray([[1], [2]]),
+    #                            agent.dnd_write_index: np.asarray([[0, 1], [1, 0]])})
+    #print(session.run([agent.dnd_values, agent.dnd_keys]))
 
-        # mini_game_done változó beállítása, mert a gym env 21 pong játékot vesz egy játéknak
-        mini_game_done = True if abs(reward) == 1 else False
+if __name__ == "__main__":
+    session = tf.Session()
+    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=1e5, neighbor_number=50)
+    rep_memory = ReplayMemory()
+    n_hor = 100
+    max_ep_num = 500
+    gamma = 0.99
+    gammas = list(map(lambda x: gamma ** x, range(n_hor)))
+    batch_size = 32
 
-        if not mini_game_done:
-            #  képet megfelelőre alakítom, stackelem majd appendelem és a hash-t is appendelem
-            processed_obs = image_preprocessor(observation)
-            agent_input = frame_stacking(agent_input, processed_obs)
-            states_list.append(agent_input)
-            states_hashes_list.append(hash(agent_input.tobytes()))
-            #  BACKPROP, minden lépésnél???????
-            if agent.global_step > 300:
-                print("pista")
-                # TODO: Az action batch átadása nem jó még itt, az action batch indexeket kell és nem a true actiont!!!!
-                state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
-                # print(state_batch, action_batch, q_n_batch)
-                session.run(agent.optimizer, feed_dict={agent.state: state_batch,
-                                                        agent.action_index: action_batch,
-                                                        agent.target_q: q_n_batch})
+    env = gym.make('Pong-v4')
 
-                #  nincs játék vége még és már volt n_hor-nyi lépés akkor kiszámolom a Q(N) értéket és hozzáadom
-                #  a megfelelő vektort a replay memoryhoz
-                # Ez azért fog működni, mert a végén pop-olunk és a reward deque hossza fix marad
-                if len(rewards_deque) == n_hor:
-                    disc_reward = np.dot(rewards_deque, gammas)
-                    bootstrap_value = gamma ** n_hor * np.amax(session.run(agent.pred_q_values,
-                                                                           feed_dict={agent.state: [states_list[local_step]]}))
-                    q_n = disc_reward + bootstrap_value
+    for i in range(max_ep_num):
+        rewards_deque = deque()
+        states_list = []
+        states_hashes_list = []
+        actions_list = []
+        q_n_list = []
+        done = False
+        mini_game_done = False
+        local_step = 0
+
+        observation = env.reset()
+        processed_obs = image_preprocessor(observation)
+        agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
+        states_list.append(agent_input)
+        states_hashes_list.append(hash(agent_input.tobytes()))
+        # Ezt is hozzá adódik a replay memoryhoz
+
+        while not done or not mini_game_done:
+            action = agent.get_action(agent_input)
+            actions_list.append(action)
+
+            observation, reward, done, info = env.step(action)
+            rewards_deque.append(reward)
+            local_step += 1
+
+            # mini_game_done változó beállítása, mert a gym env 21 pong játékot vesz egy játéknak
+            mini_game_done = True if abs(reward) == 1 else False
+
+            if not mini_game_done:
+                #  képet megfelelőre alakítom, stackelem majd appendelem és a hash-t is appendelem
+                processed_obs = image_preprocessor(observation)
+                agent_input = frame_stacking(agent_input, processed_obs)
+                states_list.append(agent_input)
+                states_hashes_list.append(hash(agent_input.tobytes()))
+                #  BACKPROP, minden lépésnél???????
+                if agent.global_step > 800:
+                    # TODO: Az action batch átadása nem jó még itt, az action batch indexeket kell és nem a true actiont!!!!
+                    state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
+                    action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
+                    # print(state_batch, action_batch, q_n_batch)
+                    session.run(agent.optimizer, feed_dict={agent.state: state_batch,
+                                                            agent.action_index: action_batch_indices,
+                                                            agent.target_q: q_n_batch})
+
+                    #  nincs játék vége még és már volt n_hor-nyi lépés akkor kiszámolom a Q(N) értéket és hozzáadom
+                    #  a megfelelő vektort a replay memoryhoz
+                    # Ez azért fog működni, mert a végén pop-olunk és a reward deque hossza fix marad
+                    if len(rewards_deque) == n_hor:
+                        disc_reward = np.dot(rewards_deque, gammas)
+                        bootstrap_value = gamma ** n_hor * np.amax(session.run(agent.pred_q_values,
+                                                                               feed_dict={agent.state: [states_list[local_step]]}))
+                        q_n = disc_reward + bootstrap_value
+                        q_n_list.append(q_n)
+                        rep_memory.append([states_list[local_step - n_hor], actions_list[local_step - n_hor], q_n])
+                        rewards_deque.popleft()
+
+            else:
+                #  játék vége van kiszámolom a disc_rewardokat viszont az elsőnek n_hor darab rewardból
+                #  a másodiknak (n_hor-1) darab rewardból, a harmadiknak (n_hor-2) darab rewardból, ésígytovább.
+                #  A bootstrap value itt mindig 0 tehát a Q(N) maga a discounted reward. Majd berakosgatom a replay memoryba
+
+                # Itt van lekezelve az, hogy a játék elején Monte-Carlo return-nel számoljuk ki a state-action value-kat.
+                q_ns = discount(rewards_deque, gamma)
+                j = len(rewards_deque)
+                for s, a, q_n in zip(states_list[-j:], actions_list[-j:], q_ns):
                     q_n_list.append(q_n)
-                    rep_memory.append([states_list[local_step - n_hor], actions_list[local_step - n_hor], q_n])
-                    rewards_deque.popleft()
+                    rep_memory.append([s, a, q_n])
 
-        else:
-            #  játék vége van kiszámolom a disc_rewardokat viszont az elsőnek n_hor darab rewardból
-            #  a másodiknak (n_hor-1) darab rewardból, a harmadiknak (n_hor-2) darab rewardból, ésígytovább.
-            #  A bootstrap value itt mindig 0 tehát a Q(N) maga a discounted reward. Majd berakosgatom a replay memoryba
+                # Tabular like update and ANN index rebuild
+                index_rebuild = not bool(i % 10)
+                agent.tabular_like_update(states_list, states_hashes_list, actions_list, q_n_list,
+                                          index_rebuild=index_rebuild)
 
-            # Itt van lekezelve az, hogy a játék elején Monte-Carlo return-nel számoljuk ki a state-action value-kat.
-            q_ns = discount(rewards_deque, gamma)
-            j = len(rewards_deque)
-            for s, a, q_n in zip(states_list[-j:], actions_list[-j:], q_ns):
-                q_n_list.append(q_n)
-                rep_memory.append([s, a, q_n])
+                print("i:", i, "rewardsum:", sum(rewards_deque)) if index_rebuild else None
 
-    print(agent.global_step)
-    #print(len(rewards_deque))
-    #print(rewards_deque.count(-1))
-    #print(local_step)
+                rewards_deque = deque()
+                states_list = []
+                states_hashes_list = []
+                actions_list = []
+                q_n_list = []
+                local_step = 0
 
-    #TODO: Tabular like update
+                #  képet megfelelőre alakítom, stackelem majd appendelem és a hash-t is appendelem
+                processed_obs = image_preprocessor(observation)
+                agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
+                states_list.append(agent_input)
+                states_hashes_list.append(hash(agent_input.tobytes()))
