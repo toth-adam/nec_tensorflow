@@ -14,20 +14,16 @@ import time
 class NECAgent:
     def __init__(self, tf_session, action_vector, dnd_max_memory=500000, neighbor_number=50):
 
-        # ANN Search index
-        self.anns = {k: AnnSearch(neighbor_number, dnd_max_memory) for k in action_vector}
-
-        # TODO: parameters
+        # Hyperparameters
         self.delta = 1e-3
-        #
         self.initial_epsilon = 1.0
 
-        # TODO: Átírni, hogy __init__ paraméter legyen
         # RMSProp parameters
-        self.rms_learning_rate = 1e-3  # TODO: Ez gőzöm sincs hogy jó-e
-        self.rms_decay = 0.9  # Állítólag DeepMind-os érték
-        self.rms_epsilon = 0.01  # Állítólag DeepMind-os érték
+        #self.rms_learning_rate = 1e-3
+        #self.rms_decay = 0.9
+        #self.rms_epsilon = 0.01
 
+        # ADAM parameters
         self.adam_learning_rate = 1e-4
 
         #  Tabular like update parameters
@@ -38,8 +34,13 @@ class NECAgent:
 
         self.fully_connected_neuron = 128
         self.dnd_max_memory = int(dnd_max_memory)
-        #AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben updatelni kell
-        #dict1 az state_hash:tf_index ez ahhoz kell hogy megnezzem hogy benne van-e tehát milyen legyen a tab_update és hogy melyik indexre a DND-ben
+
+        # ANN Search index
+        self.anns = {k: AnnSearch(neighbor_number, dnd_max_memory) for k in action_vector}
+
+        #AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben
+        # updatelni kell dict1 az state_hash:tf_index ez ahhoz kell hogy megnezzem hogy benne van-e tehát milyen
+        # legyen a tab_update és hogy melyik indexre a DND-ben
         self.tf_index__state_hash = {k: LRU(self.dnd_max_memory) for k in action_vector}
         self.state_hash__tf_index = {k: {} for k in action_vector}
 
@@ -51,15 +52,15 @@ class NECAgent:
 
         # Global step
         self.global_step = 0
+        # Első indexbuild
         self._is_search_ann_first_run = True
 
         # Tensorflow graph building
-        # Without frame stacking
-        # self.state = tf.placeholder(tf.float32, name="state")
+
         # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
         self.state = tf.placeholder(shape=[None, 84, 84, 4], dtype=tf.float32, name="state")
 
-        # TODO: Át kell írni a shape-t
+        # TODO: Helyesebb lenne figyelni hogy mennyire van betelve a DND
         self.dnd_keys = tf.Variable(
             tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron], mean=100000),
             name="DND_keys")
@@ -95,8 +96,10 @@ class NECAgent:
 
         self.dnd_value_write = tf.scatter_nd_update(self.dnd_values, self.dnd_write_index, self.dnd_value_update)
 
-        self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys], tf.int32,
-                                  name="ann_search", grad=_ann_gradient)
+        self.is_update_LRU_order = tf.placeholder(tf.int32, None, name="is_LRU_order_update")
+        self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys, self.is_update_LRU_order],
+                                  tf.int32, name="ann_search", grad=_ann_gradient)
+
         self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
         self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search, name="nn_state_values")
 
@@ -105,7 +108,7 @@ class NECAgent:
         # tf.expand_dims azért kell, hogy a különböző DND kulcsokból ugyanazt kivonjuk többször (5-ös képlet)
         self.expand_dims = tf.expand_dims(tf.expand_dims(self.state_embedding, axis=1), axis=1)
         self.square_diff = tf.square(self.expand_dims - self.nn_state_embeddings)
-        # Nem tudom miért kell a delta-t listába tenni, első futtatásnál kiderül majd
+
         self.distances = tf.sqrt(tf.reduce_sum(self.square_diff, axis=3)) + self.delta
         self.weightings = 1.0 / self.distances
         # A normalised_weightings a 2-es képlet
@@ -142,21 +145,17 @@ class NECAgent:
                                                                  self.dnd_value_cond: 0,
                                                                  self.dnd_value_update: [[[9], [3], [5.2]]]})
 
-    def get_action(self, state):
-        # TODO: We can use numpy.random.RandomState if we want to test the implementation
-
-        # Mindegyik action-re megbecsüljük a Q(s_t, a)-t, ezzel fel is töltjük a DND-t
-        # Az eredeti paper Algorithm #1  - 2. sora
+    def get_action(self, state, is_up_LRU_ord):
 
         # Choose the random action
         if np.random.random_sample() < self.curr_epsilon():
             action = np.random.choice(self.action_vector)
         # Choose the greedy action
         else:
-            max_q = self.session.run(self.predicted_q, feed_dict={self.state: state})
+            max_q = self.session.run(self.predicted_q, feed_dict={self.state: state,
+                                                                  self.is_update_LRU_order: is_up_LRU_ord})
             action = self.action_vector[max_q[0]]
 
-        # TODO: Have to save trajectory as well (states, state embeddings)
         self.global_step += 1
         return action
 
@@ -177,7 +176,7 @@ class NECAgent:
             eps = 0.001
         return eps
 
-    def _search_ann(self, search_keys, dnd_keys):
+    def _search_ann(self, search_keys, dnd_keys, update_LRU_order):
         if self._is_search_ann_first_run:
             for i, ann in self.anns.items():
                 ann.build_index(dnd_keys[self.action_vector.index(i)])
@@ -197,7 +196,8 @@ class NECAgent:
             # Very important part: Modify LRU Order here
             # Doesn't work without tabular update of course!
             # TODO: ennek még utána kell nézni - A ReplyaMemoryból vett cuccokra is változtatja a sorrendet -> nem jó
-            # _ = [self.tf_index__state_hash[act][i] for i in indices.ravel()]
+            if update_LRU_order == 1:
+                _ = [self.tf_index__state_hash[act][i] for i in indices.ravel()]
         np_batch = np.asarray(batch_indices)
 
         # Olyan alakra hozzuk, ami a gather_nd tf operationhoz kell
@@ -410,7 +410,7 @@ if __name__ == "__main__":
         # Ezt is hozzá adódik a replay memoryhoz
 
         while not done or not mini_game_done:
-            action = agent.get_action(agent_input)
+            action = agent.get_action(agent_input, 1)
             actions_list.append(action)
 
             observation, reward, done, info = env.step(action)
@@ -426,7 +426,7 @@ if __name__ == "__main__":
                 agent_input = frame_stacking(agent_input, processed_obs)
                 states_list.append(agent_input)
                 states_hashes_list.append(hash(agent_input.tobytes()))
-                #  BACKPROP, minden lépésnél???????
+
                 if agent.global_step > 800:
                     # TODO: Az action batch átadása nem jó még itt, az action batch indexeket kell és nem a true actiont!!!!
                     state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
@@ -434,7 +434,8 @@ if __name__ == "__main__":
                     # print(state_batch, action_batch, q_n_batch)
                     session.run(agent.optimizer, feed_dict={agent.state: state_batch,
                                                             agent.action_index: action_batch_indices,
-                                                            agent.target_q: q_n_batch})
+                                                            agent.target_q: q_n_batch,
+                                                            agent.is_update_LRU_order: 0})
 
                     #  nincs játék vége még és már volt n_hor-nyi lépés akkor kiszámolom a Q(N) értéket és hozzáadom
                     #  a megfelelő vektort a replay memoryhoz
