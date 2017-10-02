@@ -28,10 +28,10 @@ class NECAgent:
         #self.rms_epsilon = 0.01
 
         # ADAM parameters
-        self.adam_learning_rate = 1e-4
+        self.adam_learning_rate = 1e-6
 
         #  Tabular like update parameters
-        self.tab_alpha = 1e-2
+        self.tab_alpha = 1e-4
 
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
@@ -65,7 +65,7 @@ class NECAgent:
         self.state = tf.placeholder(shape=[None, 84, 84, 4], dtype=tf.float32, name="state")
 
         self.dnd_keys = tf.Variable(
-            tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron], mean=100000),
+            tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
             name="DND_keys")
         self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, 1]),
                                       name="DND_values")
@@ -111,6 +111,7 @@ class NECAgent:
         self.expand_dims = tf.expand_dims(tf.expand_dims(self.state_embedding, axis=1), axis=1)
         self.square_diff = tf.square(self.expand_dims - self.nn_state_embeddings)
 
+        # TODO: ITT KAKAMNAÓ VAN
         self.distances = tf.sqrt(tf.reduce_sum(self.square_diff, axis=3)) + self.delta
         self.weightings = 1.0 / self.distances
         # A normalised_weightings a 2-es képlet
@@ -138,6 +139,8 @@ class NECAgent:
 
         # Global initialization
         self.init_op = tf.global_variables_initializer()
+
+        self.check_op = tf.add_check_numerics_ops()
 
         self.session.run(self.init_op)
 
@@ -299,11 +302,28 @@ class NECAgent:
         batch_indices = np.squeeze(self._riffle_arrays(action_indices[batch_valid_indices], batch_indices))
         batch_update_values = np.expand_dims(batch_update_values, axis=1)
 
+        if np.any(np.isnan(batch_states)):
+            raise RuntimeError("Már a state-k rosszak.")
+
         # Batch tabular update
         state_embeddings, _, _ = self.session.run([self.state_embedding, self.dnd_value_write, self.dnd_key_write],
                                                   feed_dict={self.state: batch_states,
                                                   self.dnd_value_update: batch_update_values,
                                                   self.dnd_write_index: batch_indices})
+
+        if np.any(np.isnan(state_embeddings)):
+            raise RuntimeError("Konv háló")
+
+        print(np.max(state_embeddings.ravel()))
+        print(state_embeddings[np.absolute(state_embeddings) < 1e-8])
+        print(np.min(state_embeddings.ravel()))
+
+        # FLANN Add point - every batch  -- Szét kell szedni minden state embeddinget action csoportokba
+        if not index_rebuild:
+            for a in self.action_vector:
+                act_cond = actions[batch_valid_indices] == a
+                self.anns[a].update_ann(batch_indices_for_ann[act_cond], state_embeddings[act_cond],
+                                        batch_cond_vector[act_cond], dnd_lengths[self.action_vector.index(a)])
 
         # FLANN index rebuild, if index_rebuild = True
         if index_rebuild:
@@ -312,12 +332,8 @@ class NECAgent:
                 action_index = self.action_vector.index(act)
                 # Ez a jó (kövi sor)
                 ann.build_index(dnd_keys[action_index][:self._dnd_length(act)])
-
-        # FLANN Add point - every batch  -- Szét kell szedni minden state embeddinget action csoportokba
-        for a in self.action_vector:
-            act_cond = actions[batch_valid_indices] == a
-            self.anns[a].update_ann(batch_indices_for_ann[act_cond], state_embeddings[act_cond],
-                                    batch_cond_vector[act_cond], dnd_lengths[self.action_vector.index(a)])
+                print(len(dnd_keys[action_index][:self._dnd_length(act)]))
+        # print(dnd_keys[0][0])
 
         log.info("Tabular like update has been run.")
 
@@ -354,15 +370,25 @@ class AnnSearch:
         # és azt tároljuk ANN-ben
         flann_indices_seen = [k for k, v in self._ann_index__tf_index.items() if v in tf_var_dnd_indices[cond_vector]]
         self.ann.remove_points(flann_indices_seen)
+        debug_list = []
         for i, tf_var_dnd_index in enumerate(tf_var_dnd_indices[cond_vector]):
+            debug_list.append(dnd_actual_length + self._removed_points + i)
             self._ann_index__tf_index[dnd_actual_length + self._removed_points + i] = tf_var_dnd_index
+        print(debug_list)
         # TODO: A sorrendelbaszódás miatt itt kell meghívni, de majd ezt szépíteni
         # Itt adjuk hozzá a FLANN indexéhez a már látott state hash-hez
-        self.add_state_embedding(state_embeddings[cond_vector])
+        if len(state_embeddings[cond_vector]) != 0:
+            self.add_state_embedding(state_embeddings[cond_vector])
+        for debug_index, s_e in zip(debug_list, state_embeddings[cond_vector]):
+            index, _ = self.ann.nn_index(s_e, num_neighbors=1, checks=self.flann_params["checks"])
+            if index[0] != debug_index:
+                raise IndexError("Kurvaanydáat, valid_index: {}, MI_TA_index: {}".format(index[0], debug_index))
         self._removed_points += len(flann_indices_seen)
 
         # Ha nem láttuk és tele vagyunk
+        debug2_list = []
         counter = 0
+        #print(len(tf_var_dnd_indices[~cond_vector]))
         for i, tf_var_dnd_index in enumerate(tf_var_dnd_indices[~cond_vector]):
             if dnd_actual_length + i >= self.dnd_max_memory:
                 if tf_var_dnd_index in self._ann_index__tf_index.values():
@@ -374,11 +400,27 @@ class AnnSearch:
                 self.ann.remove_point(index)
                 self._ann_index__tf_index[dnd_actual_length + self._removed_points + counter] = tf_var_dnd_index
                 self._removed_points += 1
+
+                # DEBUG
+                debug2_list.append(dnd_actual_length + self._removed_points + counter)
             else:
+                # print(counter)
                 self._ann_index__tf_index[dnd_actual_length + self._removed_points + counter] = tf_var_dnd_index
+
+                # DEBUG
+                debug2_list.append(dnd_actual_length + self._removed_points + counter)
+
                 counter += 1
 
         self.add_state_embedding(state_embeddings[~cond_vector])
+        # DEBUG
+        for debug_index, s_e in zip(debug2_list, state_embeddings[~cond_vector]):
+            index, _ = self.ann.nn_index(s_e, num_neighbors=1, checks=self.flann_params["checks"], eps=0)
+            #print(index[0])
+            #print(s_e)
+            if index[0] != debug_index:
+                print(s_e)
+                raise IndexError("Baszom a szád, valid_index: {}, MI_TA_index: {} deb_list: {}, dnd_length: {}, removed_points: {}".format(index[0], debug_index, debug2_list, dnd_actual_length, self._removed_points))
 
     def build_index(self, tf_variable_dnd):
         self.flann_params = self.ann.build_index(tf_variable_dnd, algorithm="kdtree", target_precision=1)
@@ -389,9 +431,11 @@ class AnnSearch:
     def query(self, state_embeddings):
         indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
                                        checks=self.flann_params["checks"])
-
-        tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
+        try:
+            tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
                               for index_row in indices]
+        except KeyError as e:
+            print(str(e))
         return np.asarray(tf_var_dnd_indices, dtype=np.int32)
 
 
@@ -476,7 +520,10 @@ if __name__ == "__main__":
     log.addHandler(ch)
     log.addHandler(fh)
 
-    session = tf.Session()
+    config = tf.ConfigProto(
+        device_count={'GPU': 0}
+    )
+    session = tf.Session(config=config)
     agent = NECAgent(session, [0, 2, 3], dnd_max_memory=400, neighbor_number=50)
     rep_memory = ReplayMemory()
     n_hor = 100
@@ -487,6 +534,8 @@ if __name__ == "__main__":
     # mean_reward = 0
 
     env = gym.make('Pong-v4')
+
+    tf.summary.FileWriter("/home/atoth/temp", graph=session.graph)
 
     for i in range(max_ep_num):
         rewards_deque = deque()
@@ -531,11 +580,14 @@ if __name__ == "__main__":
                     state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
                     action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
                     # print(state_batch, action_batch, q_n_batch)
-                    session.run(agent.optimizer, feed_dict={agent.state: state_batch,
+                    session.run([agent.optimizer, agent.check_op], feed_dict={agent.state: state_batch,
                                                             agent.action_index: action_batch_indices,
                                                             agent.target_q: q_n_batch,
-                                                            agent.is_update_LRU_order: 0})
+                                                            agent.is_update_LRU_order: 0,
+                                                            agent.dnd_value_update: 1.32})
                     log.debug("Optimizer has been run.")
+                    valami = session.run(agent.state_embedding, feed_dict={agent.state: state_batch})
+                    log.info("Van-e benne NAN vagy nincs: {}".format(np.any(np.isnan(valami))))
 
                     #  nincs játék vége még és már volt n_hor-nyi lépés akkor kiszámolom a Q(N) értéket és hozzáadom
                     #  a megfelelő vektort a replay memoryhoz
