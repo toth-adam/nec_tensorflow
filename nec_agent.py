@@ -28,10 +28,10 @@ class NECAgent:
         #self.rms_epsilon = 0.01
 
         # ADAM parameters
-        self.adam_learning_rate = 1e-6
+        self.adam_learning_rate = 1e-4
 
         #  Tabular like update parameters
-        self.tab_alpha = 1e-4
+        self.tab_alpha = 0.5e-2
 
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
@@ -162,7 +162,7 @@ class NECAgent:
 
     def curr_epsilon(self):
         eps = self.initial_epsilon
-        if 1000 < self.global_step < 25000: # 1000=4999
+        if 4999 < self.global_step < 25000: # 1000=4999
             eps = self.initial_epsilon - ((self.global_step - 5000) * 4.995e-5)
         elif self.global_step > 24999:
             eps = 0.001
@@ -216,7 +216,7 @@ class NECAgent:
         return tf_indices.reshape((array_1.shape[0], array_1.shape[1], 2))
 
     def tabular_like_update(self, states, state_hashes, actions, q_ns, index_rebuild=False):
-        log.info("Tabular like update has been started.")
+        # log.info("Tabular like update has been started.")
         # Making np arrays
         states = np.asarray(states)
         state_hashes = np.asarray(state_hashes)
@@ -328,7 +328,7 @@ class NECAgent:
                 # Ez a jó (kövi sor)
                 ann.build_index(dnd_keys[action_index][:self._dnd_length(act)])
 
-        log.info("Tabular like update has been run.")
+        # log.info("Tabular like update has been run.")
 
     def _dnd_lengths(self):
         return [len(self.tf_index__state_hash[a]) for a in self.action_vector]
@@ -426,7 +426,7 @@ class AnnSearch:
         self.flann_params = self.ann.build_index(tf_variable_dnd, algorithm="kdtree", target_precision=1)
         self._ann_index__tf_index = {}
         self._removed_points = 0
-        log.info("ANN index has been rebuilt for action {}.".format(self.action))
+        # log.info("ANN index has been rebuilt for action {}.".format(self.action))
 
     def query(self, state_embeddings):
         indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
@@ -504,20 +504,20 @@ if __name__ == "__main_":
 if __name__ == "__main__":
     log.setLevel(logging.DEBUG)
 
-    ch = logging.StreamHandler(sys.stdout)
+    # ch = logging.StreamHandler(sys.stdout)
     fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
-    ch.setLevel(logging.INFO)
+    # ch.setLevel(logging.INFO)
     fh.setLevel(logging.INFO)
 
     # create formatter
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # add formatter to ch
-    ch.setFormatter(formatter)
+    # ch.setFormatter(formatter)
     fh.setFormatter(formatter)
 
     # add ch to logger
-    log.addHandler(ch)
+    # log.addHandler(ch)
     log.addHandler(fh)
 
     # config = tf.ConfigProto(
@@ -525,10 +525,10 @@ if __name__ == "__main__":
     # )
     # session = tf.Session(config=config)
     session = tf.Session()
-    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=400, neighbor_number=50)
+    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000, neighbor_number=50)
     rep_memory = ReplayMemory()
     n_hor = 100
-    max_ep_num = 500
+    max_ep_num = 500000
     gamma = 0.99
     gammas = list(map(lambda x: gamma ** x, range(n_hor)))
     batch_size = 32
@@ -537,6 +537,8 @@ if __name__ == "__main__":
     env = gym.make('Pong-v4')
 
     tf.summary.FileWriter("/home/atoth/temp", graph=session.graph)
+
+    games_reward_list = []
 
     for i in range(max_ep_num):
         rewards_deque = deque()
@@ -548,6 +550,9 @@ if __name__ == "__main__":
         mini_game_done = False
         local_step = 0
         mini_game_counter = 0
+
+        mini_game_rewards_list = []
+        local_step_list = []
 
         observation = env.reset()
         processed_obs = image_preprocessor(observation)
@@ -577,7 +582,7 @@ if __name__ == "__main__":
                 states_list.append(agent_input)
                 states_hashes_list.append(hash(agent_input.tobytes()))
 
-                if agent.global_step > 800:
+                if agent.global_step > 1000:
                     state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
                     action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
                     # print(state_batch, action_batch, q_n_batch)
@@ -620,13 +625,11 @@ if __name__ == "__main__":
                 agent.tabular_like_update(states_list, states_hashes_list, actions_list, q_n_list,
                                           index_rebuild=index_rebuild)
 
-                log.info("Mini-game (for 1 point) is finished.")
-                log.info("Step number: {}, Mini-game reward: {}".format(local_step, sum(rewards_deque)))
-                for act, dnd in agent.tf_index__state_hash.items():
-                    log.info("DND length for action {}: {}, {}".format(act, len(dnd), len(agent.state_hash__tf_index[act])))
-                    if len(dnd) != len(agent.state_hash__tf_index[act]):
-                        log.info("Gebasz van, DND: {}, St: {}".format(dnd, agent.state_hash__tf_index[act]))
-                log.info("Global step number: {}".format(agent.global_step))
+                # log.info("Mini-game (for 1 point) is finished.")
+                mini_game_reward = sum(rewards_deque)
+                mini_game_rewards_list.append(mini_game_reward)
+                local_step_list.append(local_step)
+                #log.info("Step number: {}, Mini-game reward: {}".format(local_step, mini_game_reward))
 
                 rewards_deque = deque()
                 states_list = []
@@ -641,6 +644,19 @@ if __name__ == "__main__":
                 states_list.append(agent_input)
                 states_hashes_list.append(hash(agent_input.tobytes()))
 
-                log.info("New mini-game has been started.")
+                #log.info("New mini-game has been started.")
                 #if agent.global_step %
                 mini_game_counter += 1
+
+        mini_games_reward_sum = sum(mini_game_rewards_list)
+        games_reward_list.append(mini_games_reward_sum)
+        log.info("Mini-game step numbers: {}".format(local_step_list))
+        log.info("Mini-game rewards: {}".format(mini_game_rewards_list))
+
+        log.info("Score for a (21-points) game: {}".format(mini_games_reward_sum))
+        for act, dnd in agent.tf_index__state_hash.items():
+            log.info("DND length for action {}: {}".format(act, len(dnd)))
+        log.info("Global step number: {}".format(agent.global_step))
+
+        if (i + 1) % 10 == 0 and i != 0:
+            log.info("Score average for last 10 (21-points) game: {}".format(sum(games_reward_list[-10:]) / 10))
