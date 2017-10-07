@@ -502,23 +502,23 @@ if __name__ == "__main_":
     #print(session.run([agent.dnd_values, agent.dnd_keys]))
 
 if __name__ == "__main__":
-    log.setLevel(logging.DEBUG)
+    log.setLevel(logging.INFO)
 
     # ch = logging.StreamHandler(sys.stdout)
-    fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
+    # fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
     # ch.setLevel(logging.INFO)
-    fh.setLevel(logging.INFO)
+    # fh.setLevel(logging.INFO)
 
     # create formatter
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # add formatter to ch
     # ch.setFormatter(formatter)
-    fh.setFormatter(formatter)
+    # fh.setFormatter(formatter)
 
     # add ch to logger
     # log.addHandler(ch)
-    log.addHandler(fh)
+    # log.addHandler(fh)
 
     # config = tf.ConfigProto(
     #     device_count={'GPU': 0}
@@ -526,7 +526,7 @@ if __name__ == "__main__":
     # session = tf.Session(config=config)
     session = tf.Session()
     agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000, neighbor_number=50)
-    rep_memory = ReplayMemory()
+    rep_memory = ReplayMemory(size=1e5, stack_size=4)
     n_hor = 100
     max_ep_num = 500000
     gamma = 0.99
@@ -536,13 +536,14 @@ if __name__ == "__main__":
 
     env = gym.make('Pong-v4')
 
-    tf.summary.FileWriter("/home/atoth/temp", graph=session.graph)
+    # tf.summary.FileWriter("/home/atoth/temp", graph=session.graph)
 
     games_reward_list = []
 
     for i in range(max_ep_num):
         rewards_deque = deque()
         states_list = []
+        observation_list = []
         states_hashes_list = []
         actions_list = []
         q_n_list = []
@@ -556,6 +557,7 @@ if __name__ == "__main__":
 
         observation = env.reset()
         processed_obs = image_preprocessor(observation)
+        observation_list.append(processed_obs)
         agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
         states_list.append(agent_input)
         states_hashes_list.append(hash(agent_input.tobytes()))
@@ -578,6 +580,7 @@ if __name__ == "__main__":
             if not mini_game_done:
                 #  képet megfelelőre alakítom, stackelem majd appendelem és a hash-t is appendelem
                 processed_obs = image_preprocessor(observation)
+                observation_list.append(processed_obs)
                 agent_input = frame_stacking(agent_input, processed_obs)
                 states_list.append(agent_input)
                 states_hashes_list.append(hash(agent_input.tobytes()))
@@ -604,7 +607,8 @@ if __name__ == "__main__":
                                                                                           agent.is_update_LRU_order: 0}))
                         q_n = disc_reward + bootstrap_value
                         q_n_list.append(q_n)
-                        rep_memory.append([states_list[local_step - n_hor], actions_list[local_step - n_hor], q_n])
+                        rep_memory.append([observation_list[local_step - n_hor], actions_list[local_step - n_hor], q_n],
+                                          mini_game_done)
                         rewards_deque.popleft()
 
             else:
@@ -613,12 +617,14 @@ if __name__ == "__main__":
                 #  A bootstrap value itt mindig 0 tehát a Q(N) maga a discounted reward. Majd berakosgatom a replay memoryba
 
                 # Itt van lekezelve az, hogy a játék elején Monte-Carlo return-nel számoljuk ki a state-action value-kat.
-
                 q_ns = discount(rewards_deque, gamma)
                 j = len(rewards_deque)
-                for s, a, q_n in zip(states_list[-j:], actions_list[-j:], q_ns):
+                for count, (o, a, q_n) in enumerate(zip(observation_list[-j:], actions_list[-j:], q_ns)):
                     q_n_list.append(q_n)
-                    rep_memory.append([s, a, q_n])
+                    e_e = False
+                    if count == len(observation_list[-j:]) - 1:
+                        e_e = True
+                    rep_memory.append([o, a, q_n], e_e)
 
                 # Tabular like update and ANN index rebuild
                 index_rebuild = not bool(mini_game_counter % 10)
@@ -633,6 +639,7 @@ if __name__ == "__main__":
 
                 rewards_deque = deque()
                 states_list = []
+                observation_list = []
                 states_hashes_list = []
                 actions_list = []
                 q_n_list = []
@@ -640,6 +647,7 @@ if __name__ == "__main__":
 
                 #  képet megfelelőre alakítom, stackelem majd appendelem és a hash-t is appendelem
                 processed_obs = image_preprocessor(observation)
+                observation_list.append(processed_obs)
                 agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
                 states_list.append(agent_input)
                 states_hashes_list.append(hash(agent_input.tobytes()))
