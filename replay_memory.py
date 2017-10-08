@@ -19,7 +19,9 @@ class ReplayMemory:
             if r_ind not in rand_samp_num and not self.episode_end[r_ind]:
                 rand_samp_num.append(r_ind)
 
-        rand_samp_list = []
+        batch_states = []
+        batch_actions = []
+        batch_q_ns = []
         for rand_index in rand_samp_num:
             stacked_frames = []
             seen_false = False
@@ -35,7 +37,9 @@ class ReplayMemory:
 
             numpy_appended_frames = np.asarray(stacked_frames)
             numpy_stacked_frames = np.stack(numpy_appended_frames, axis=2)
-            rand_samp_list.append([numpy_stacked_frames, self.rep_mem[rand_index][1], self.rep_mem[rand_index][2]])
 
-        trans_rand_sample = list(map(list, zip(*rand_samp_list)))
-        return trans_rand_sample[0], trans_rand_sample[1], trans_rand_sample[2]  # state, action, q_n
+            batch_states.append(numpy_stacked_frames)
+            batch_actions.append(self.rep_mem[rand_index][1])
+            batch_q_ns.append(self.rep_mem[rand_index][2])
+
+        return batch_states,  batch_actions, batch_q_ns
