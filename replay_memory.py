@@ -24,12 +24,14 @@ class ReplayMemory:
         batch_q_ns = []
         for rand_index in rand_samp_num:
             stacked_frames = []
-            seen_false = False
-            false_state = None
+            #seen_false = False
+            #false_state = None
             for i in range(self.stack_size):
-                if self.episode_end[rand_index - i] is True:
-                    seen_false = True
-                    false_state = self.rep_mem[rand_index - i][0]
+                if self.episode_end[rand_index - i] is True or rand_index - i < 0:
+                    #seen_false = True
+                    last_false_state = [self.rep_mem[rand_index - i - 1][0]] * (self.stack_size - i)
+                    stacked_frames.append(last_false_state)
+                    break
                 if not seen_false:
                     stacked_frames.append(self.rep_mem[rand_index - i][0])
                 else:
