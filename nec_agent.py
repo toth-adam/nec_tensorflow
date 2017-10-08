@@ -504,21 +504,21 @@ if __name__ == "__main_":
 if __name__ == "__main__":
     log.setLevel(logging.INFO)
 
-    # ch = logging.StreamHandler(sys.stdout)
-    # fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
-    # ch.setLevel(logging.INFO)
-    # fh.setLevel(logging.INFO)
+    ch = logging.StreamHandler(sys.stdout)
+    fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
+    ch.setLevel(logging.INFO)
+    fh.setLevel(logging.INFO)
 
     # create formatter
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # add formatter to ch
-    # ch.setFormatter(formatter)
-    # fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+    fh.setFormatter(formatter)
 
     # add ch to logger
-    # log.addHandler(ch)
-    # log.addHandler(fh)
+    log.addHandler(ch)
+    log.addHandler(fh)
 
     # config = tf.ConfigProto(
     #     device_count={'GPU': 0}
@@ -588,7 +588,6 @@ if __name__ == "__main__":
                 if agent.global_step > 1000:
                     state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
                     action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
-                    # print(state_batch, action_batch, q_n_batch)
                     session.run(agent.optimizer, feed_dict={agent.state: state_batch,
                                                             agent.action_index: action_batch_indices,
                                                             agent.target_q: q_n_batch,
