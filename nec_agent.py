@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 class NECAgent:
     def __init__(self, tf_session, action_vector, dnd_max_memory=500000, neighbor_number=50):
 
-        # Hyperparameters
+        ###### Hyperparameters ######
         self.delta = 1e-3
         self.initial_epsilon = 1.0
 
@@ -33,16 +33,16 @@ class NECAgent:
         #  Tabular like update parameters
         self.tab_alpha = 1e-2
 
-        self.action_vector = action_vector
-        self.number_of_actions = len(action_vector)
-
         self.fully_connected_neuron = 128
         self.dnd_max_memory = int(dnd_max_memory)
+
+        self.action_vector = action_vector
+        self.number_of_actions = len(action_vector)
 
         # ANN Search index
         self.anns = {k: AnnSearch(neighbor_number, dnd_max_memory, k) for k in action_vector}
 
-        #AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben
+        # AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben
         # updatelni kell dict1 az state_hash:tf_index ez ahhoz kell hogy megnezzem hogy benne van-e tehát milyen
         # legyen a tab_update és hogy melyik indexre a DND-ben
         self.tf_index__state_hash = {k: LRU(self.dnd_max_memory) for k in action_vector}
@@ -54,26 +54,26 @@ class NECAgent:
         # Tensorflow Session object
         self.session = tf_session
 
+        # Tensrflow Saver
+        self.tensorflow_saver = tf.train.Saver(max_to_keep=20)
+
         # Global step
         self.global_step = 0
-        # Első indexbuild
-        self._is_search_ann_first_run = True
 
-        # Tensorflow graph building
+        ####### Tensorflow graph building #######
 
-        # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
+        # Stacking 4 frames
         self.state = tf.placeholder(shape=[None, 84, 84, 4], dtype=tf.float32, name="state")
 
-        # TODO: Helyesebb lenne figyelni hogy mennyire van betelve a DND
         self.dnd_keys = tf.Variable(
-            tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron], mean=100000),
+            tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
             name="DND_keys")
         self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, 1]),
                                       name="DND_values")
 
         # Always better to use smaller kernel size! These layers are from OpenAI
         # Learning Atari: An Exploration of the A3C Reinforcement
-        # TODO: USE 1x1 kernels-bottleneck, CS231n Winter 2016: Lecture 11 from 29 minutes
+        # USE 1x1 kernels-bottleneck, CS231n Winter 2016: Lecture 11 from 29 minutes
 
         self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
                                  inputs=self.state, num_outputs=32,
@@ -88,7 +88,7 @@ class NECAgent:
                                  inputs=self.conv3, num_outputs=32,
                                  kernel_size=[3, 3], stride=[2, 2], padding='SAME')
 
-        # TODO: This is the final fully connected layer
+        # This is the final fully connected layer
         self.state_embedding = slim.fully_connected(slim.flatten(self.conv4), self.fully_connected_neuron,
                                                     activation_fn=tf.nn.elu)
 
@@ -101,12 +101,12 @@ class NECAgent:
         self.dnd_value_write = tf.scatter_nd_update(self.dnd_values, self.dnd_write_index, self.dnd_value_update)
 
         self.is_update_LRU_order = tf.placeholder(tf.int32, None, name="is_LRU_order_update")
+
         self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys, self.is_update_LRU_order],
                                   tf.int32, name="ann_search", grad=_ann_gradient)
 
         self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
         self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search, name="nn_state_values")
-
 
         # DND calculation
         # tf.expand_dims azért kell, hogy a különböző DND kulcsokból ugyanazt kivonjuk többször (5-ös képlet)
@@ -143,6 +143,12 @@ class NECAgent:
 
         self.session.run(self.init_op)
 
+    # TODO: save TF model variables and the LRU Dict probably it is enough for this def (beside save replay memory)
+    # If we have the tf_index__state_hash LRU than we can recreate the state_hash__tf_index dict
+    def save_nec_model(self, path):
+        self.tensorflow_saver.save(sess,self.model_path+'/model-'+str(episode_count)+'.cptk')
+
+
     def get_action(self, state, is_up_LRU_ord):
 
         # Choose the random action
@@ -159,6 +165,7 @@ class NECAgent:
         self.global_step += 1
         return action
 
+
     def curr_epsilon(self):
         eps = self.initial_epsilon
         if 4999 < self.global_step < 25000:
@@ -167,13 +174,8 @@ class NECAgent:
             eps = 0.001
         return eps
 
-    def _search_ann(self, search_keys, dnd_keys, update_LRU_order):
-        # if self._is_search_ann_first_run:
-        #     log.debug("First run of ANN index build.")
-        #     for i, ann in self.anns.items():
-        #         ann.build_index(dnd_keys[self.action_vector.index(i)])
-        #     self._is_search_ann_first_run = False
 
+    def _search_ann(self, search_keys, dnd_keys, update_LRU_order):
         batch_indices = []
         for act, ann in self.anns.items():
             # These are the indices we get back from ANN search
@@ -187,7 +189,6 @@ class NECAgent:
             batch_indices.append(tf_indices)
             # Very important part: Modify LRU Order here
             # Doesn't work without tabular update of course!
-            # TODO: ennek még utána kell nézni - A ReplyaMemoryból vett cuccokra is változtatja a sorrendet -> nem jó
             if update_LRU_order == 1:
                 _ = [self.tf_index__state_hash[act][i] for i in indices.ravel()]
         np_batch = np.asarray(batch_indices)
@@ -197,7 +198,6 @@ class NECAgent:
         final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])], dtype=np.int32)
 
         return final_indices
-
         # return np.array([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]],
         # [[2, 0], [2, 1]]]])
 
@@ -265,7 +265,6 @@ class NECAgent:
         # 1. Ha state_hash alapján már láttuk a state-t és felül fogjuk írni a hozzá tartozó "h" értéket a FLANN indexben
         # 2. Ha már tele van a DND, akkor új elem berakása esetén törölni kell a kiesőt a FLANN indexből.
 
-
         # Batch tabular update
         state_embeddings, _, _ = self.session.run([self.state_embedding, self.dnd_value_write, self.dnd_key_write],
                                                   feed_dict={self.state: states,
@@ -304,8 +303,7 @@ class AnnSearch:
     def add_state_embedding(self, state_embedding):
         self.ann.add_points(state_embedding)
 
-    # TODO: Ezt batchelve? Arra lett írva, amikor már tele van a DND, -> megvizsgálni egy olyat amikor, még nincs tele,
-    # de hozzá kell adni pontokat.
+
     def update_ann(self, tf_var_dnd_index, state_embedding):
         # A tf_var_dnd_index alapján kell törölnünk a Flann indexéből. Ez csak abban az esetben fog
         # kelleni, ha nincs index build és egy olyan index jön be, amihez tartozó state_embeddeinget már egyszer hozzáadtam.
@@ -338,7 +336,7 @@ def py_func(func, inp, Tout, stateful=True, name=None, grad=None):
     # Need to generate a unique name to avoid duplicates:
     rnd_name = 'PyFuncGrad' + str(np.random.randint(0, 1000000))
 
-    tf.RegisterGradient(rnd_name)(grad)  # see _MySquareGrad for grad example
+    tf.RegisterGradient(rnd_name)(grad)
     g = tf.get_default_graph()
     with g.gradient_override_map({"PyFunc": rnd_name}):
         return tf.py_func(func, inp, Tout, stateful=stateful, name=name)
@@ -364,32 +362,6 @@ def transform_array_to_tuple(tf_array):
 def discount(x, gamma):
     a = np.asarray(x)
     return lfilter([1], [1, -gamma], a[::-1], axis=0)[::-1]
-
-if __name__ == "__main_":
-    session = tf.Session()
-    env = gym.make('Pong-v4')
-    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=1e5, neighbor_number=50)
-
-    observation = env.reset()
-    for _ in range(30):
-        observation,_,_,_=env.step(0)
-    processed_obs = image_preprocessor(observation)
-
-    import matplotlib.pyplot as plt
-
-    plt.imshow(processed_obs, cmap="gray")
-    plt.show()
-    #dnd_q_value, full_dnd = session.run([agent.nn_state_values, agent.dnd_values], feed_dict={agent.ann_search: [[0, 1], [1,0]]})
-    #print(dnd_q_value)
-    ##print("#############x")
-    ##print(full_dnd)
-    #fake_frame = np.random.rand(2, 84, 84, 4)
-#
-    #session.run([agent.dnd_value_write, agent.dnd_key_write],
-    #                 feed_dict={agent.state: fake_frame,
-    #                            agent.dnd_value_update: np.asarray([[1], [2]]),
-    #                            agent.dnd_write_index: np.asarray([[0, 1], [1, 0]])})
-    #print(session.run([agent.dnd_values, agent.dnd_keys]))
 
 if __name__ == "__main__":
     log.setLevel(logging.DEBUG)
@@ -459,7 +431,6 @@ if __name__ == "__main__":
                 states_hashes_list.append(hash(agent_input.tobytes()))
 
                 if agent.global_step > 800:
-                    # TODO: Az action batch átadása nem jó még itt, az action batch indexeket kell és nem a true actiont!!!!
                     state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
                     action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
                     # print(state_batch, action_batch, q_n_batch)
