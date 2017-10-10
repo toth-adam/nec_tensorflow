@@ -43,3 +43,13 @@ class ReplayMemory:
             batch_q_ns.append(self.rep_mem[rand_index][2])
 
         return np.array(batch_states, dtype=np.float32),  batch_actions, batch_q_ns
+
+    def save(self, path, glob_step_num):
+        np.save(path + '/rep_mem_' + str(glob_step_num) + '.npy', self.rep_mem)
+        np.save(path + '/episode_end_' + str(glob_step_num) + '.npy', self.episode_end)
+
+    def load(self, path, glob_step_num):
+        r_m = np.load(path + '/rep_mem_' + str(glob_step_num) + '.npy')
+        e_e = np.load(path + '/episode_end_' + str(glob_step_num) + '.npy')
+        for r_m_i, e_e_i in zip(r_m, e_e):
+            self.append(r_m_i, e_e_i)

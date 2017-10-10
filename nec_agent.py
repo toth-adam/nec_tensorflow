@@ -49,15 +49,13 @@ class NECAgent:
         self.state_hash__tf_index = {k: {} for k in action_vector}
 
         # Ez követi a DND beteléséig, hogy hol állunk
-        self._actual_dnd_length = {act: 0 for act in self.action_vector}
+        # self._actual_dnd_length = {act: 0 for act in self.action_vector}
 
         # Tensorflow Session object
         self.session = tf_session
 
         # Global step
         self.global_step = 0
-        # Első indexbuild
-        self._is_search_ann_first_run = True
 
         # Tensorflow graph building
 
@@ -144,8 +142,27 @@ class NECAgent:
 
         self.session.run(self.init_op)
 
-    def get_action(self, state, is_up_LRU_ord):
+        self.saver = tf.train.Saver(max_to_keep=5)
 
+    def save_agent(self, path):
+        self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
+        # az LRU mappán belül hozza létre az actionokhöz tartozó .npy fájlt.
+        # Ebből létre lehet hozni a "self.state_hash__tf_index" is!
+        for a, dict in self.tf_index__state_hash:
+            np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
+
+
+    def load_agent(self, path, glob_step_num):
+        self.saver.restore(self.session, path + "/model_" + str(glob_step_num) + '.cptk')
+        for a in self.action_vector:
+            act_LRU = np.load(path + '/LRU_' + str(glob_step_num) + "/" + str(a) + '.npy')
+            # azért reversed, hogy a lista legelső elemét rakja bele utoljára, így az lesz az MRU
+            for tf_index, state_hash in reversed(act_LRU):
+                self.tf_index__state_hash[a][tf_index] = state_hash
+                self.state_hash__tf_index[a][state_hash] = tf_index
+
+
+    def get_action(self, state, is_up_LRU_ord):
         # Choose the random action
         if np.random.random_sample() < self.curr_epsilon():
             action = np.random.choice(self.action_vector)
@@ -162,19 +179,13 @@ class NECAgent:
 
     def curr_epsilon(self):
         eps = self.initial_epsilon
-        if 4999 < self.global_step < 25000: # 1000=4999
+        if 4999 < self.global_step < 25000:
             eps = self.initial_epsilon - ((self.global_step - 5000) * 4.995e-5)
         elif self.global_step > 24999:
             eps = 0.001
         return eps
 
     def _search_ann(self, search_keys, dnd_keys, update_LRU_order):
-        # if self._is_search_ann_first_run:
-        #     log.debug("First run of ANN index build.")
-        #     for i, ann in self.anns.items():
-        #         ann.build_index(dnd_keys[self.action_vector.index(i)])
-        #     self._is_search_ann_first_run = False
-
         batch_indices = []
         for act, ann in self.anns.items():
             # These are the indices we get back from ANN search
@@ -309,10 +320,6 @@ class NECAgent:
                                                   self.dnd_value_update: batch_update_values,
                                                   self.dnd_write_index: batch_indices})
 
-        # print(np.max(state_embeddings.ravel()))
-        # print(state_embeddings[np.absolute(state_embeddings) < 1e-8])
-        # print(np.min(state_embeddings.ravel()))
-
         # FLANN Add point - every batch  -- Szét kell szedni minden state embeddinget action csoportokba
         if not index_rebuild:
             for a in self.action_vector:
@@ -352,13 +359,10 @@ class AnnSearch:
     def add_state_embedding(self, state_embedding):
         self.ann.add_points(state_embedding)
 
-    # TODO: Ezt batchelve? Arra lett írva, amikor már tele van a DND, -> megvizsgálni egy olyat amikor, még nincs tele,
-    # de hozzá kell adni pontokat.
     def update_ann(self, tf_var_dnd_indices, state_embeddings, cond_vector, dnd_actual_length):
         # A tf_var_dnd_index alapján kell törölnünk a Flann indexéből. Ez csak abban az esetben fog
         # kelleni, ha nincs index build és egy olyan index jön be, amihez tartozó state_embeddeinget már egyszer hozzáadtam.
 
-        # TODO: Megnézni, hogy számít-e, hogy üres lista a flann_indices_seen
         # Ha láttuk már a pontot akkor ki kell törölni, mert a state hash-hehz tartozó state embedding érték megváltozott
         # és azt tároljuk ANN-ben
         flann_indices_seen = []
@@ -370,19 +374,14 @@ class AnnSearch:
             flann_indices_seen.append(index)
         # flann_indices_seen = [k for k, v in self._ann_index__tf_index.items() if v in tf_var_dnd_indices[cond_vector]]
         self.ann.remove_points(flann_indices_seen)
-        # debug_list = []
+
         for i, tf_var_dnd_index in enumerate(tf_var_dnd_indices[cond_vector]):
-        #     debug_list.append(dnd_actual_length + self._removed_points + i)
             self._ann_index__tf_index[dnd_actual_length + self._removed_points + i] = tf_var_dnd_index
-        # print(debug_list)
-        # TODO: A sorrendelbaszódás miatt itt kell meghívni, de majd ezt szépíteni
+
         # Itt adjuk hozzá a FLANN indexéhez a már látott state hash-hez
         if len(state_embeddings[cond_vector]) != 0:
             self.add_state_embedding(state_embeddings[cond_vector])
-        # for debug_index, s_e in zip(debug_list, state_embeddings[cond_vector]):
-        #     index, _ = self.ann.nn_index(s_e, num_neighbors=1, checks=self.flann_params["checks"])
-        #     if index[0] != debug_index:
-        #         raise IndexError("Kurvaanydáat, valid_index: {}, MI_TA_index: {}".format(index[0], debug_index))
+
         self._removed_points += len(flann_indices_seen)
 
         # Ha nem láttuk és tele vagyunk
@@ -399,28 +398,15 @@ class AnnSearch:
                 # ez a rész itt még zsivány, nem fölfele
                 self.ann.remove_point(index)
                 self._ann_index__tf_index[dnd_actual_length + self._removed_points + counter] = tf_var_dnd_index
-                # DEBUG
-                # debug2_list.append(dnd_actual_length + self._removed_points + counter)
+
                 self._removed_points += 1
 
             else:
-                # print(counter)
                 self._ann_index__tf_index[dnd_actual_length + self._removed_points + counter] = tf_var_dnd_index
-
-                # DEBUG
-                # debug2_list.append(dnd_actual_length + self._removed_points + counter)
 
                 counter += 1
 
         self.add_state_embedding(state_embeddings[~cond_vector])
-        # DEBUG
-        # for debug_index, s_e in zip(debug2_list, state_embeddings[~cond_vector]):
-        #     index, _ = self.ann.nn_index(s_e, num_neighbors=1, checks=self.flann_params["checks"], eps=0)
-        #     #print(index[0])
-        #     #print(s_e)
-        #     if index[0] != debug_index:
-        #         print(s_e)
-        #         raise IndexError("Baszom a szád, valid_index: {}, MI_TA_index: {} deb_list: {}, dnd_length: {}, removed_points: {}".format(index[0], debug_index, debug2_list, dnd_actual_length, self._removed_points))
 
     def build_index(self, tf_variable_dnd):
         self.flann_params = self.ann.build_index(tf_variable_dnd, algorithm="kdtree", target_precision=1)
@@ -431,11 +417,9 @@ class AnnSearch:
     def query(self, state_embeddings):
         indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
                                        checks=self.flann_params["checks"])
-        # try:
         tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
                               for index_row in indices]
-        # except KeyError as e:
-        #     print(str(e))
+
         return np.asarray(tf_var_dnd_indices, dtype=np.int32)
 
 
@@ -475,31 +459,7 @@ def discount(x, gamma):
     a = np.asarray(x)
     return lfilter([1], [1, -gamma], a[::-1], axis=0)[::-1]
 
-if __name__ == "__main_":
-    session = tf.Session()
-    env = gym.make('Pong-v4')
-    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=1e5, neighbor_number=50)
-
-    observation = env.reset()
-    for _ in range(30):
-        observation,_,_,_=env.step(0)
-    processed_obs = image_preprocessor(observation)
-
-    import matplotlib.pyplot as plt
-
-    plt.imshow(processed_obs, cmap="gray")
-    plt.show()
-    #dnd_q_value, full_dnd = session.run([agent.nn_state_values, agent.dnd_values], feed_dict={agent.ann_search: [[0, 1], [1,0]]})
-    #print(dnd_q_value)
-    ##print("#############x")
-    ##print(full_dnd)
-    #fake_frame = np.random.rand(2, 84, 84, 4)
-#
-    #session.run([agent.dnd_value_write, agent.dnd_key_write],
-    #                 feed_dict={agent.state: fake_frame,
-    #                            agent.dnd_value_update: np.asarray([[1], [2]]),
-    #                            agent.dnd_write_index: np.asarray([[0, 1], [1, 0]])})
-    #print(session.run([agent.dnd_values, agent.dnd_keys]))
+# ######################## MAIN LOOP ############################## #
 
 if __name__ == "__main__":
     log.setLevel(logging.INFO)
