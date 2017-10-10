@@ -148,7 +148,7 @@ class NECAgent:
         self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
         # az LRU mappán belül hozza létre az actionokhöz tartozó .npy fájlt.
         # Ebből létre lehet hozni a "self.state_hash__tf_index" is!
-        for a, dict in self.tf_index__state_hash:
+        for a, dict in self.tf_index__state_hash.items():
             np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
 
 
