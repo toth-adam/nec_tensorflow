@@ -1,5 +1,6 @@
 import logging
 import sys
+import os
 import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
@@ -148,19 +149,22 @@ class NECAgent:
         self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
         # az LRU mappán belül hozza létre az actionokhöz tartozó .npy fájlt.
         # Ebből létre lehet hozni a "self.state_hash__tf_index" is!
+        try:
+            os.mkdir(path + '/LRU_' + str(self.global_step))
+        except FileExistsError:
+            pass
         for a, dict in self.tf_index__state_hash.items():
             np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
 
-
     def load_agent(self, path, glob_step_num):
         self.saver.restore(self.session, path + "/model_" + str(glob_step_num) + '.cptk')
+        self.global_step = glob_step_num
         for a in self.action_vector:
             act_LRU = np.load(path + '/LRU_' + str(glob_step_num) + "/" + str(a) + '.npy')
             # azért reversed, hogy a lista legelső elemét rakja bele utoljára, így az lesz az MRU
             for tf_index, state_hash in reversed(act_LRU):
                 self.tf_index__state_hash[a][tf_index] = state_hash
                 self.state_hash__tf_index[a][state_hash] = tf_index
-
 
     def get_action(self, state, is_up_LRU_ord):
         # Choose the random action
@@ -465,20 +469,20 @@ if __name__ == "__main__":
     log.setLevel(logging.INFO)
 
     ch = logging.StreamHandler(sys.stdout)
-    fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
+    #fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
     ch.setLevel(logging.INFO)
-    fh.setLevel(logging.INFO)
+    #fh.setLevel(logging.INFO)
 
     # create formatter
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # add formatter to ch
     ch.setFormatter(formatter)
-    fh.setFormatter(formatter)
+    #fh.setFormatter(formatter)
 
     # add ch to logger
     log.addHandler(ch)
-    log.addHandler(fh)
+    #log.addHandler(fh)
 
     # config = tf.ConfigProto(
     #     device_count={'GPU': 0}
@@ -487,6 +491,13 @@ if __name__ == "__main__":
     session = tf.Session()
     agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000, neighbor_number=50)
     rep_memory = ReplayMemory(size=1e5, stack_size=4)
+    # LOADING
+    load_path = "D:/RL/nec_saves"
+    agent.load_agent(load_path, 3630)
+    rep_memory.load(load_path, 3630)
+    for action_index, act in enumerate(agent.action_vector):
+        dnd_keys = session.run(agent.dnd_values)
+        agent.anns[act].build_index(dnd_keys[action_index][:agent._dnd_length(act)])
     n_hor = 100
     max_ep_num = 500000
     gamma = 0.99
@@ -627,3 +638,7 @@ if __name__ == "__main__":
 
         if (i + 1) % 10 == 0 and i != 0:
             log.info("Score average for last 10 (21-points) game: {}".format(sum(games_reward_list[-10:]) / 10))
+
+        save_path = "D:/RL/nec_saves"
+        agent.save_agent(save_path)
+        rep_memory.save(save_path, agent.global_step)
