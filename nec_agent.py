@@ -446,7 +446,7 @@ def image_preprocessor(state):
     state = state[32:195, :, :]
     state = misc.imresize(state, [84, 84])
     # greyscaling and normalizing state
-    state = np.dot(state[..., :3], [0.299, 0.587, 0.114]) / 255.0
+    state = np.dot(state[..., :3], np.array([0.299, 0.587, 0.114], dtype=np.float32))
     return state
 
 
@@ -465,24 +465,25 @@ def discount(x, gamma):
 
 # ######################## MAIN LOOP ############################## #
 
+
 if __name__ == "__main__":
     log.setLevel(logging.INFO)
 
     ch = logging.StreamHandler(sys.stdout)
-    #fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
+    fh = logging.FileHandler("C:/Work/temp/nec_agent/nec_log.txt")
     ch.setLevel(logging.INFO)
-    #fh.setLevel(logging.INFO)
+    fh.setLevel(logging.INFO)
 
     # create formatter
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # add formatter to ch
     ch.setFormatter(formatter)
-    #fh.setFormatter(formatter)
+    fh.setFormatter(formatter)
 
     # add ch to logger
     log.addHandler(ch)
-    #log.addHandler(fh)
+    log.addHandler(fh)
 
     # config = tf.ConfigProto(
     #     device_count={'GPU': 0}
@@ -492,13 +493,13 @@ if __name__ == "__main__":
     agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000, neighbor_number=50)
     rep_memory = ReplayMemory(size=1e5, stack_size=4)
     # LOADING
-    if True:
-        load_path = "C:/RL/nec_saves"
-        agent.load_agent(load_path, 2750)
-        rep_memory.load(load_path, 2750)
-        for action_index, act in enumerate(agent.action_vector):
-            dnd_keys = session.run(agent.dnd_keys)
-            agent.anns[act].build_index(dnd_keys[action_index][:agent._dnd_length(act)])
+    # if True:
+    #     load_path = "C:/RL/nec_saves"
+    #     agent.load_agent(load_path, 2750)
+    #     rep_memory.load(load_path, 2750)
+    #     for action_index, act in enumerate(agent.action_vector):
+    #         dnd_keys = session.run(agent.dnd_keys)
+    #         agent.anns[act].build_index(dnd_keys[action_index][:agent._dnd_length(act)])
     n_hor = 100
     max_ep_num = 500000
     gamma = 0.99
@@ -508,7 +509,7 @@ if __name__ == "__main__":
 
     env = gym.make('Pong-v4')
 
-    # tf.summary.FileWriter("/home/atoth/temp", graph=session.graph)
+    tf.summary.FileWriter("C:/Work/temp/nec_agent", graph=session.graph)
 
     games_reward_list = []
 
@@ -640,6 +641,7 @@ if __name__ == "__main__":
         if (i + 1) % 10 == 0 and i != 0:
             log.info("Score average for last 10 (21-points) game: {}".format(sum(games_reward_list[-10:]) / 10))
 
-        save_path = "C:/RL/nec_saves"
-        agent.save_agent(save_path)
-        rep_memory.save(save_path, agent.global_step)
+        if (i + 1) % 5 == 0 and i != 0:
+            save_path = "C:/Work/temp/nec_agent"
+            agent.save_agent(save_path)
+            rep_memory.save(save_path, agent.global_step)
