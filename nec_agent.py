@@ -492,12 +492,13 @@ if __name__ == "__main__":
     agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000, neighbor_number=50)
     rep_memory = ReplayMemory(size=1e5, stack_size=4)
     # LOADING
-    load_path = "D:/RL/nec_saves"
-    agent.load_agent(load_path, 3630)
-    rep_memory.load(load_path, 3630)
-    for action_index, act in enumerate(agent.action_vector):
-        dnd_keys = session.run(agent.dnd_values)
-        agent.anns[act].build_index(dnd_keys[action_index][:agent._dnd_length(act)])
+    if True:
+        load_path = "C:/RL/nec_saves"
+        agent.load_agent(load_path, 2750)
+        rep_memory.load(load_path, 2750)
+        for action_index, act in enumerate(agent.action_vector):
+            dnd_keys = session.run(agent.dnd_keys)
+            agent.anns[act].build_index(dnd_keys[action_index][:agent._dnd_length(act)])
     n_hor = 100
     max_ep_num = 500000
     gamma = 0.99
@@ -639,6 +640,6 @@ if __name__ == "__main__":
         if (i + 1) % 10 == 0 and i != 0:
             log.info("Score average for last 10 (21-points) game: {}".format(sum(games_reward_list[-10:]) / 10))
 
-        save_path = "D:/RL/nec_saves"
+        save_path = "C:/RL/nec_saves"
         agent.save_agent(save_path)
         rep_memory.save(save_path, agent.global_step)
