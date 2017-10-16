@@ -6,10 +6,10 @@ class ReplayMemory:
     def __init__(self, size, stack_size):
         self.stack_size = stack_size
         self.size = int(size)
-        self.maxlen = int(size + stack_size -1)
+        self.maxlen = int(size + stack_size - 1)
         self.rep_mem = deque(maxlen=self.maxlen)
         self.episode_end = deque(maxlen=self.maxlen)
-        self.choice_range = np.arange(stack_size -1, size + stack_size)
+        self.choice_range = np.arange(stack_size - 1, size + stack_size - 1)
 
     def append(self, item, ep_end):
         self.rep_mem.append(item)
