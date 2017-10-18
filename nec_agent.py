@@ -446,7 +446,7 @@ def image_preprocessor(state):
     state = state[32:195, :, :]
     state = misc.imresize(state, [84, 84])
     # greyscaling and normalizing state
-    state = np.dot(state[..., :3], np.array([0.299, 0.587, 0.114], dtype=np.float32))
+    state = np.dot(state[..., :3], np.array([0.299, 0.587, 0.114], dtype=np.float32)) / 255.0
     return state
 
 
