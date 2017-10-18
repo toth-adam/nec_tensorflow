@@ -413,14 +413,6 @@ class AnnSearch:
                 counter += 1
 
         self.add_state_embedding(state_embeddings[~cond_vector])
-        # DEBUG
-        # for debug_index, s_e in zip(debug2_list, state_embeddings[~cond_vector]):
-        #     index, _ = self.ann.nn_index(s_e, num_neighbors=1, checks=self.flann_params["checks"], eps=0)
-        #     #print(index[0])
-        #     #print(s_e)
-        #     if index[0] != debug_index:
-        #         print(s_e)
-        #         raise IndexError("Baszom a szád, valid_index: {}, MI_TA_index: {} deb_list: {}, dnd_length: {}, removed_points: {}".format(index[0], debug_index, debug2_list, dnd_actual_length, self._removed_points))
 
     def build_index(self, tf_variable_dnd):
         self.flann_params = self.ann.build_index(tf_variable_dnd, algorithm="kdtree", target_precision=1)
@@ -431,11 +423,9 @@ class AnnSearch:
     def query(self, state_embeddings):
         indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
                                        checks=self.flann_params["checks"])
-        # try:
         tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
                               for index_row in indices]
-        # except KeyError as e:
-        #     print(str(e))
+
         return np.asarray(tf_var_dnd_indices, dtype=np.int32)
 
 
@@ -458,7 +448,7 @@ def image_preprocessor(state):
     state = state[32:195, :, :]
     state = misc.imresize(state, [84, 84])
     # greyscaling and normalizing state
-    state = np.dot(state[..., :3], [0.299, 0.587, 0.114]) / 255.0
+    state = np.dot(state[..., :3], np.array([0.299, 0.587, 0.114], dtype=np.float32)) / 255.0
     return state
 
 
@@ -502,7 +492,7 @@ if __name__ == "__main_":
     #print(session.run([agent.dnd_values, agent.dnd_keys]))
 
 if __name__ == "__main__":
-    log.setLevel(logging.DEBUG)
+    log.setLevel(logging.INFO)
 
     # ch = logging.StreamHandler(sys.stdout)
     fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
@@ -536,7 +526,7 @@ if __name__ == "__main__":
 
     env = gym.make('Pong-v4')
 
-    tf.summary.FileWriter("/home/atoth/temp", graph=session.graph)
+    tf.summary.FileWriter("C:/Work/temp/nec_agent", graph=session.graph)
 
     games_reward_list = []
 
@@ -585,7 +575,6 @@ if __name__ == "__main__":
                 if agent.global_step > 1000:
                     state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
                     action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
-                    # print(state_batch, action_batch, q_n_batch)
                     session.run(agent.optimizer, feed_dict={agent.state: state_batch,
                                                             agent.action_index: action_batch_indices,
                                                             agent.target_q: q_n_batch,
