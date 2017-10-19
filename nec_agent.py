@@ -1,47 +1,65 @@
 import logging
 import sys
 import os
+from collections import deque
+
 import numpy as np
+from scipy import misc
+from scipy.signal import lfilter
+
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
-from scipy import misc
-from replay_memory import ReplayMemory
+
 import gym
-from scipy.signal import lfilter
-from collections import deque
+
 from lru import LRU
 from pyflann import FLANN
-import time
+
+from replay_memory import ReplayMemory
+
 
 log = logging.getLogger(__name__)
 
 
 class NECAgent:
-    def __init__(self, tf_session, action_vector, dnd_max_memory=500000, neighbor_number=50):
+    def __init__(self, tf_session, action_vector, dnd_max_memory=500000, neighbor_number=50,
+                 backprop_learning_rate=1e-4, tabular_learning_rate=0.5e-2, fully_conn_neurons=128,
+                 input_shape=(84, 84, 4), kernel_size=(3, 3), num_outputs=32, stride=(2, 2), delta=1e-3,
+                 rep_memory_size=1e5, batch_size=32):
 
-        # Hyperparameters
-        self.delta = 1e-3
-        self.initial_epsilon = 1.0
+        # ----------- HYPERPARAMETERS ----------- #
 
-        # RMSProp parameters
-        #self.rms_learning_rate = 1e-3
-        #self.rms_decay = 0.9
-        #self.rms_epsilon = 0.01
+        self.delta = delta
+        self.initial_epsilon = 1
 
-        # ADAM parameters
-        self.adam_learning_rate = 1e-4
+        # Optimizer parameters
+        self.adam_learning_rate = backprop_learning_rate
+        self.batch_size = batch_size
 
-        #  Tabular like update parameters
-        self.tab_alpha = 0.5e-2
+        # Tabular parameters
+        self.tab_alpha = tabular_learning_rate
+        self.dnd_max_memory = int(dnd_max_memory)
 
+        # Reinforcement learning parameters
+        self.n_step_horizon = n_hor
+        self.discount_factor = gamma
+
+        # Convolutional layer parameters
+        self._input_shape = input_shape
+        self.fully_connected_neuron = fully_conn_neurons
+        self._kernel_size = kernel_size
+        self._stride = stride
+        self._num_outputs = num_outputs
+
+        # Environment specific parameters
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
 
-        self.fully_connected_neuron = 128
-        self.dnd_max_memory = int(dnd_max_memory)
-
         # ANN Search index
         self.anns = {k: AnnSearch(neighbor_number, dnd_max_memory, k) for k in action_vector}
+
+        # Replay memory
+        self.replay_memory = ReplayMemory(size=rep_memory_size, stack_size=input_shape[-1])
 
         #AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben
         # updatelni kell dict1 az state_hash:tf_index ez ahhoz kell hogy megnezzem hogy benne van-e tehát milyen
@@ -49,20 +67,17 @@ class NECAgent:
         self.tf_index__state_hash = {k: LRU(self.dnd_max_memory) for k in action_vector}
         self.state_hash__tf_index = {k: {} for k in action_vector}
 
-        # Ez követi a DND beteléséig, hogy hol állunk
-        # self._actual_dnd_length = {act: 0 for act in self.action_vector}
-
         # Tensorflow Session object
         self.session = tf_session
 
         # Global step
         self.global_step = 0
 
-        # Tensorflow graph building
+        # ----------- TENSORFLOW GRAPH BUILDING ----------- #
 
-        # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
-        self.state = tf.placeholder(shape=[None, 84, 84, 4], dtype=tf.float32, name="state")
+        self.state = tf.placeholder(shape=[None, *self._input_shape], dtype=tf.float32, name="state")
 
+        # TF Variables representing the Differentiable Neural Dictionary (DND)
         self.dnd_keys = tf.Variable(
             tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
             name="DND_keys")
@@ -74,22 +89,23 @@ class NECAgent:
         # TODO: USE 1x1 kernels-bottleneck, CS231n Winter 2016: Lecture 11 from 29 minutes
 
         self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.state, num_outputs=32,
-                                 kernel_size=[3, 3], stride=[2, 2], padding='SAME')
+                                 inputs=self.state, num_outputs=self._num_outputs,
+                                 kernel_size=self._kernel_size, stride=self._stride, padding='SAME')
         self.conv2 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.conv1, num_outputs=32,
-                                 kernel_size=[3, 3], stride=[2, 2], padding='SAME')
+                                 inputs=self.conv1, num_outputs=self._num_outputs,
+                                 kernel_size=self._kernel_size, stride=self._stride, padding='SAME')
         self.conv3 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.conv2, num_outputs=32,
-                                 kernel_size=[3, 3], stride=[2, 2], padding='SAME')
+                                 inputs=self.conv2, num_outputs=self._num_outputs,
+                                 kernel_size=self._kernel_size, stride=self._stride, padding='SAME')
         self.conv4 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.conv3, num_outputs=32,
-                                 kernel_size=[3, 3], stride=[2, 2], padding='SAME')
+                                 inputs=self.conv3, num_outputs=self._num_outputs,
+                                 kernel_size=self._kernel_size, stride=self._stride, padding='SAME')
 
         # This is the final fully connected layer
         self.state_embedding = slim.fully_connected(slim.flatten(self.conv4), self.fully_connected_neuron,
                                                     activation_fn=tf.nn.elu)
 
+        # DND write operations
         self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
 
         self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, self.state_embedding)
@@ -98,30 +114,34 @@ class NECAgent:
 
         self.dnd_value_write = tf.scatter_nd_update(self.dnd_values, self.dnd_write_index, self.dnd_value_update)
 
+        # This placeholder is used to decide whether modify LRU order in the DND or not (We modify the order during
+        # action selection for new frames; we do not modify the order if we run the optimizer.)
         self.is_update_LRU_order = tf.placeholder(tf.int32, None, name="is_LRU_order_update")
+        # Custom function to handle Approximate Nearest Neighbor search
         self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys, self.is_update_LRU_order],
                                   tf.int32, name="ann_search", grad=_ann_gradient)
 
+        # Gather operations to select from DND (according to ann search outputs)
         self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
         self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search, name="nn_state_values")
 
         # DND calculation
-        # tf.expand_dims azért kell, hogy a különböző DND kulcsokból ugyanazt kivonjuk többször (5-ös képlet)
+        # expand_dims() is needed to subtract the key(s) (state_embedding) from neighboring keys (Eq. 5)
         self.expand_dims = tf.expand_dims(tf.expand_dims(self.state_embedding, axis=1), axis=1)
         self.square_diff = tf.square(self.expand_dims - self.nn_state_embeddings)
 
-        # self.distances = tf.sqrt(tf.reduce_sum(self.square_diff, axis=3)) + self.delta
+        # We clip the values here, because the 0 values cause problems during backward pass (NaNs)
         self.distances = tf.sqrt(tf.clip_by_value(tf.reduce_sum(self.square_diff, axis=3), 1e-12, 1e12)) + self.delta
         self.weightings = 1.0 / self.distances
-        # A normalised_weightings a 2-es képlet
+        # Normalised weightings (Eq. 2)
         self.normalised_weightings = self.weightings / tf.reduce_sum(self.weightings, axis=2, keep_dims=True)
-        # Ez az 1-es képlet
+        # (Eq. 1)
         self.squeeze = tf.squeeze(self.nn_state_values, axis=3)
         self.pred_q_values = tf.reduce_sum(self.squeeze * self.normalised_weightings, axis=2,
                                            name="predicted_q_values")
         self.predicted_q = tf.argmax(self.pred_q_values, axis=1, name="predicted_q")
 
-        # Ennek egy vektornak kell lennie. pl: [1, 0, 0]
+        # This has to be an iterable, e.g.: [1, 0, 0]
         self.action_index = tf.placeholder(tf.int32, [None], name="action")
         self.action_onehot = tf.one_hot(self.action_index, self.number_of_actions, axis=-1)
 
@@ -132,18 +152,25 @@ class NECAgent:
         total_loss = tf.square(self.td_err, name="total_loss")
 
         # Optimizer
-        # self.optimizer = tf.train.RMSPropOptimizer(self.rms_learning_rate, decay=self.rms_decay,
-        #                                            epsilon=self.rms_epsilon).minimize(total_loss)
         self.optimizer = tf.train.AdamOptimizer(self.adam_learning_rate).minimize(total_loss)
+
+        # ----------- AUXILIARY ----------- #
 
         # Global initialization
         self.init_op = tf.global_variables_initializer()
-
-        self.check_op = tf.add_check_numerics_ops()
-
         self.session.run(self.init_op)
 
+        # Check op for NaN checking - if needed
+        self.check_op = tf.add_check_numerics_ops()
+
+        # Saver op
         self.saver = tf.train.Saver(max_to_keep=5)
+
+        # Logging
+        self._log_hyperparameters()
+
+        # Create discount factor vector
+        self._gammas = list(map(lambda x: gamma ** x, range(self.n_step_horizon)))
 
     def save_agent(self, path):
         self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
@@ -155,6 +182,8 @@ class NECAgent:
             pass
         for a, dict in self.tf_index__state_hash.items():
             np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
+
+        # TODO: Save replay memory here
 
     def load_agent(self, path, glob_step_num):
         self.saver.restore(self.session, path + "/model_" + str(glob_step_num) + '.cptk')
@@ -180,6 +209,16 @@ class NECAgent:
 
         self.global_step += 1
         return action
+
+    def optimize(self):
+        # Get the batches from replay memory
+        state_batch, action_batch, q_n_batch = self.replay_memory.get_batch(self.batch_size)
+        action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
+        session.run(agent.optimizer, feed_dict={agent.state: state_batch,
+                                                agent.action_index: action_batch_indices,
+                                                agent.target_q: q_n_batch,
+                                                agent.is_update_LRU_order: 0})
+        log.debug("Optimizer has been run.")
 
     def curr_epsilon(self):
         eps = self.initial_epsilon
@@ -208,30 +247,25 @@ class NECAgent:
         np_batch = np.asarray(batch_indices)
         log.debug("Batch update indices: {}".format(np_batch))
 
-        # Olyan alakra hozzuk, ami a gather_nd tf operationhoz kell
+        # Reshaping to gather_nd compatible format
         final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])], dtype=np.int32)
 
         return final_indices
 
-        # return np.array([[[[0, 0], [0, 1]], [[1, 0], [1, 1]], [[2, 0], [2, 1]]], [[[0, 0], [0, 1]], [[1, 0], [1, 1]],
-        # [[2, 0], [2, 1]]]])
-
     @staticmethod
     def _riffle_arrays(array_1, array_2):
-        if array_1.shape != array_2.shape:
-            raise ValueError("foscsi")
         if len(array_1.shape) == 1:
             array_1 = np.expand_dims(array_1, axis=0)
             array_2 = np.expand_dims(array_2, axis=0)
 
         tf_indices = np.empty([array_1.shape[0], array_1.shape[1] * 2], dtype=array_1.dtype)
-        # Összefésüljük az action indexet az annből kijövő indexszel
+        # Riffle the action indices with ann output indices
         tf_indices[:, 0::2] = array_1
         tf_indices[:, 1::2] = array_2
         return tf_indices.reshape((array_1.shape[0], array_1.shape[1], 2))
 
     def tabular_like_update(self, states, state_hashes, actions, q_ns, index_rebuild=False):
-        # log.info("Tabular like update has been started.")
+        log.debug("Tabular like update has been started.")
         # Making np arrays
         states = np.asarray(states)
         state_hashes = np.asarray(state_hashes)
@@ -257,7 +291,7 @@ class NECAgent:
 
         local_sh_dict = {a: {} for a in self.action_vector}
 
-        # Ez a batch a teljes epizódot jelenti
+        # Batch means one complete game (21-points) in this context
         batch_update_values = []
         batch_indices = []
         batch_states = []
@@ -324,7 +358,7 @@ class NECAgent:
                                                   self.dnd_value_update: batch_update_values,
                                                   self.dnd_write_index: batch_indices})
 
-        # FLANN Add point - every batch  -- Szét kell szedni minden state embeddinget action csoportokba
+        # FLANN Add point - every batch
         if not index_rebuild:
             for a in self.action_vector:
                 act_cond = actions[batch_valid_indices] == a
@@ -339,13 +373,16 @@ class NECAgent:
                 # Ez a jó (kövi sor)
                 ann.build_index(dnd_keys[action_index][:self._dnd_length(act)])
 
-        # log.info("Tabular like update has been run.")
+        log.debug("Tabular like update has been run.")
 
     def _dnd_lengths(self):
         return [len(self.tf_index__state_hash[a]) for a in self.action_vector]
 
     def _dnd_length(self, a):
         return len(self.tf_index__state_hash[a])
+
+    def _log_hyperparameters(self):
+        pass
 
 
 class AnnSearch:
@@ -442,9 +479,9 @@ def py_func(func, inp, Tout, stateful=True, name=None, grad=None):
         return tf.py_func(func, inp, Tout, stateful=stateful, name=name)
 
 
-def image_preprocessor(state):
+def image_preprocessor(state, size=(84, 84)):
     state = state[32:195, :, :]
-    state = misc.imresize(state, [84, 84])
+    state = misc.imresize(state, size)
     # greyscaling and normalizing state
     state = np.dot(state[..., :3], np.array([0.299, 0.587, 0.114], dtype=np.float32)) / 255.0
     return state
@@ -455,43 +492,54 @@ def frame_stacking(s_t, o_t):  # Ahol az "s_t" a korábban stackkelt 4 frame, "o
     return s_t1
 
 
-def transform_array_to_tuple(tf_array):
-    return tuple(tf_array)
+def initial_frame_stacking(processed_obs):
+    return np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
 
 
 def discount(x, gamma):
     a = np.asarray(x)
     return lfilter([1], [1, -gamma], a[::-1], axis=0)[::-1]
 
+
+def setup_logging(level=logging.INFO, is_stream_handler=True, is_file_handler=False, file_handler_filename=None):
+    log.setLevel(level)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    if is_stream_handler:
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(level)
+        ch.setFormatter(formatter)
+        log.addHandler(ch)
+
+    if is_file_handler:
+        if file_handler_filename:
+            fh = logging.FileHandler(file_handler_filename)
+            fh.setLevel(level)
+            fh.setFormatter(formatter)
+            log.addHandler(fh)
+        else:
+            raise ValueError("file_handler_filename must not be None if is_file_handler = True")
+
+
+def create_tf_session(only_cpu=False):
+    if only_cpu:
+        config = tf.ConfigProto(device_count={"GPU": 0})
+        return tf.Session(config=config)
+    else:
+        return tf.Session()
+
+
 # ######################## MAIN LOOP ############################## #
 
 
 if __name__ == "__main__":
-    log.setLevel(logging.INFO)
 
-    ch = logging.StreamHandler(sys.stdout)
-    fh = logging.FileHandler("C:/Work/temp/nec_agent/nec_log.txt")
-    ch.setLevel(logging.INFO)
-    fh.setLevel(logging.INFO)
+    setup_logging(is_file_handler=True, file_handler_filename="C:/Work/temp/nec_agent/nec_log.txt")
 
-    # create formatter
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    session = create_tf_session()
 
-    # add formatter to ch
-    ch.setFormatter(formatter)
-    fh.setFormatter(formatter)
+    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000)
 
-    # add ch to logger
-    log.addHandler(ch)
-    log.addHandler(fh)
-
-    # config = tf.ConfigProto(
-    #     device_count={'GPU': 0}
-    # )
-    # session = tf.Session(config=config)
-    session = tf.Session()
-    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000, neighbor_number=50)
-    rep_memory = ReplayMemory(size=1e5, stack_size=4)
     # LOADING
     # if True:
     #     load_path = "C:/RL/nec_saves"
@@ -505,7 +553,6 @@ if __name__ == "__main__":
     gamma = 0.99
     gammas = list(map(lambda x: gamma ** x, range(n_hor)))
     batch_size = 32
-    # mean_reward = 0
 
     env = gym.make('Pong-v4')
 
@@ -559,15 +606,7 @@ if __name__ == "__main__":
                 states_hashes_list.append(hash(agent_input.tobytes()))
 
                 if agent.global_step > 1000:
-                    state_batch, action_batch, q_n_batch = rep_memory.get_batch(batch_size)
-                    action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
-                    session.run(agent.optimizer, feed_dict={agent.state: state_batch,
-                                                            agent.action_index: action_batch_indices,
-                                                            agent.target_q: q_n_batch,
-                                                            agent.is_update_LRU_order: 0})
-                    log.debug("Optimizer has been run.")
-                    # valami = session.run(agent.state_embedding, feed_dict={agent.state: state_batch})
-                    # log.info("Van-e benne NAN vagy nincs: {}".format(np.any(np.isnan(valami))))
+                    agent.optimize()
 
                     #  nincs játék vége még és már volt n_hor-nyi lépés akkor kiszámolom a Q(N) értéket és hozzáadom
                     #  a megfelelő vektort a replay memoryhoz
