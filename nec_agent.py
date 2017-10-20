@@ -4,13 +4,10 @@ import os
 from collections import deque
 
 import numpy as np
-from scipy import misc
 from scipy.signal import lfilter
 
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
-
-import gym
 
 from lru import LRU
 from pyflann import FLANN
@@ -22,10 +19,13 @@ log = logging.getLogger(__name__)
 
 
 class NECAgent:
-    def __init__(self, tf_session, action_vector, dnd_max_memory=500000, neighbor_number=50,
+    def __init__(self, action_vector, cpu_only=False, dnd_max_memory=500000, neighbor_number=50,
                  backprop_learning_rate=1e-4, tabular_learning_rate=0.5e-2, fully_conn_neurons=128,
-                 input_shape=(84, 84, 4), kernel_size=(3, 3), num_outputs=32, stride=(2, 2), delta=1e-3,
-                 rep_memory_size=1e5, batch_size=32):
+                 input_shape=(84, 84, 4), kernel_size=((3, 3), (3, 3), (3, 3), (3, 3)), num_outputs=(32, 32, 32, 32),
+                 stride=((2, 2), (2, 2), (2, 2), (2, 2)), delta=1e-3, rep_memory_size=1e5, batch_size=32,
+                 frame_stacking_number=4, n_step_horizon=100, discount_factor=0.99, log_save_directory=None):
+
+        self._cpu_only = cpu_only
 
         # ----------- HYPERPARAMETERS ----------- #
 
@@ -41,8 +41,8 @@ class NECAgent:
         self.dnd_max_memory = int(dnd_max_memory)
 
         # Reinforcement learning parameters
-        self.n_step_horizon = n_hor
-        self.discount_factor = gamma
+        self.n_step_horizon = n_step_horizon
+        self.discount_factor = discount_factor
 
         # Convolutional layer parameters
         self._input_shape = input_shape
@@ -54,6 +54,7 @@ class NECAgent:
         # Environment specific parameters
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
+        self.frame_stacking_number = frame_stacking_number
 
         # ANN Search index
         self.anns = {k: AnnSearch(neighbor_number, dnd_max_memory, k) for k in action_vector}
@@ -68,10 +69,12 @@ class NECAgent:
         self.state_hash__tf_index = {k: {} for k in action_vector}
 
         # Tensorflow Session object
-        self.session = tf_session
+        self.session = self._create_tf_session(self._cpu_only)
 
-        # Global step
+        # Step numbers
         self.global_step = 0
+        self.episode_step = 0
+        self.episode_number = 0
 
         # ----------- TENSORFLOW GRAPH BUILDING ----------- #
 
@@ -87,23 +90,11 @@ class NECAgent:
         # Always better to use smaller kernel size! These layers are from OpenAI
         # Learning Atari: An Exploration of the A3C Reinforcement
         # TODO: USE 1x1 kernels-bottleneck, CS231n Winter 2016: Lecture 11 from 29 minutes
-
-        self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.state, num_outputs=self._num_outputs,
-                                 kernel_size=self._kernel_size, stride=self._stride, padding='SAME')
-        self.conv2 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.conv1, num_outputs=self._num_outputs,
-                                 kernel_size=self._kernel_size, stride=self._stride, padding='SAME')
-        self.conv3 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.conv2, num_outputs=self._num_outputs,
-                                 kernel_size=self._kernel_size, stride=self._stride, padding='SAME')
-        self.conv4 = slim.conv2d(activation_fn=tf.nn.elu,
-                                 inputs=self.conv3, num_outputs=self._num_outputs,
-                                 kernel_size=self._kernel_size, stride=self._stride, padding='SAME')
+        self.convolutional_layers = self._create_conv_layers()
 
         # This is the final fully connected layer
-        self.state_embedding = slim.fully_connected(slim.flatten(self.conv4), self.fully_connected_neuron,
-                                                    activation_fn=tf.nn.elu)
+        self.state_embedding = slim.fully_connected(slim.flatten(self.convolutional_layers[-1]),
+                                                    self.fully_connected_neuron, activation_fn=tf.nn.elu)
 
         # DND write operations
         self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
@@ -155,6 +146,7 @@ class NECAgent:
         self.optimizer = tf.train.AdamOptimizer(self.adam_learning_rate).minimize(total_loss)
 
         # ----------- AUXILIARY ----------- #
+        # ----------- TF related ----------- #
 
         # Global initialization
         self.init_op = tf.global_variables_initializer()
@@ -166,59 +158,141 @@ class NECAgent:
         # Saver op
         self.saver = tf.train.Saver(max_to_keep=5)
 
+        # ----------- Episode related containers ----------- #
+        self._observation_list = []
+        self._agent_input_list = []
+        self._agent_input_hashes_list = []
+        self._agent_action_list = []
+        self._rewards_deque = deque()
+        self._q_values_list = []
+
         # Logging
         self._log_hyperparameters()
 
         # Create discount factor vector
-        self._gammas = list(map(lambda x: gamma ** x, range(self.n_step_horizon)))
+        self._gammas = list(map(lambda x: self.discount_factor ** x, range(self.n_step_horizon)))
 
-    def save_agent(self, path):
-        self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
-        # az LRU mappán belül hozza létre az actionokhöz tartozó .npy fájlt.
-        # Ebből létre lehet hozni a "self.state_hash__tf_index" is!
-        try:
-            os.mkdir(path + '/LRU_' + str(self.global_step))
-        except FileExistsError:
-            pass
-        for a, dict in self.tf_index__state_hash.items():
-            np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
+    # This is the main function which we call in different environments during playing
+    def get_action(self, processed_observation):
+        # Get the agent input (frame-stacking) using the preprocessed observation
+        # We also store the relevant quantities
+        agent_input = self._get_agent_input(processed_observation)
+        # Get the action
+        action = self._get_action(agent_input)
+        # Optimize if the global_step number is above 1000 (making sure we have enough elements in the replay memory and
+        # each DND)
+        # TODO: Make this number a parameter
+        if self.global_step > 1000:
+            self._optimize()
+            # Calculate bootstrap Q value as early as possible, so we can insert the corresponding (S, A, Q) tuple into
+            # the replay memory. Because of this, the agent may sample from this example during the next _optimize()
+            # call. (Intentionally)
+            # This function only gets called if episode_step >= n_step_horizon
+            if len(self._rewards_deque) == self.n_step_horizon:
+                self._calculate_bootstrapped_q_value()
+                # Store (S, A, Q) in the replay memory
 
-        # TODO: Save replay memory here
+                rep_memory.append([observation_list[local_step - n_hor], actions_list[local_step - n_hor], q_n],
+                                  mini_game_done)
+                # We pop the leftmost element from the rewards deque, hence the condition before
+                # _calculate_bootstrapped_q_value() remains True until the episode end.
+                # (Also we do not need this element anymore, since we have already used it for calculating the Q value.)
+                self._rewards_deque.popleft()
 
-    def load_agent(self, path, glob_step_num):
-        self.saver.restore(self.session, path + "/model_" + str(glob_step_num) + '.cptk')
-        self.global_step = glob_step_num
-        for a in self.action_vector:
-            act_LRU = np.load(path + '/LRU_' + str(glob_step_num) + "/" + str(a) + '.npy')
-            # azért reversed, hogy a lista legelső elemét rakja bele utoljára, így az lesz az MRU
-            for tf_index, state_hash in reversed(act_LRU):
-                self.tf_index__state_hash[a][tf_index] = state_hash
-                self.state_hash__tf_index[a][state_hash] = tf_index
 
-    def get_action(self, state, is_up_LRU_ord):
+
+        self.global_step += 1
+        self.episode_step += 1
+
+        return action
+
+    # This is the main function which we call in different environments after an episode is finished.
+    def update(self):
+
+        #  játék vége van kiszámolom a disc_rewardokat viszont az elsőnek n_hor darab rewardból
+        #  a másodiknak (n_hor-1) darab rewardból, a harmadiknak (n_hor-2) darab rewardból, ésígytovább.
+        #  A bootstrap value itt mindig 0 tehát a Q(N) maga a discounted reward. Majd berakosgatom a replay memoryba
+
+        # Itt van lekezelve az, hogy a játék elején Monte-Carlo return-nel számoljuk ki a state-action value-kat.
+        q_ns = discount(rewards_deque, gamma)
+        j = len(rewards_deque)
+        for count, (o, a, q_n) in enumerate(zip(observation_list[-j:], actions_list[-j:], q_ns)):
+            q_n_list.append(q_n)
+            e_e = False
+            if count == len(observation_list[-j:]) - 1:
+                e_e = True
+            rep_memory.append([o, a, q_n], e_e)
+
+        # TODO: Index rebuild bool here  -- index_rebuild = not bool(mini_game_counter % 10)
+
+        self._tabular_like_update()
+
+    def reset_episode_related_containers(self):
+        self._observation_list = []
+        self._agent_input_list = []
+        self._agent_input_hashes_list = []
+        self._agent_action_list = []
+        self._rewards_deque = deque()
+        self._q_values_list = []
+        self.episode_step = 0
+        # Increment episode number
+        self.episode_number += 1
+
+    # Should be a pre-processed observation
+    def _get_agent_input(self, processed_observation):
+        if self.episode_step == 0:
+            agent_input = self._initial_frame_stacking(processed_observation)
+        else:
+            agent_input = self._frame_stacking(self._agent_input_list[-1], processed_observation)
+        # Saving the relevant quantities
+        self._observation_list.append(processed_observation)
+        self._agent_input_list.append(agent_input)
+        self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
+        return agent_input
+
+    def _get_action(self, agent_input):
         # Choose the random action
         if np.random.random_sample() < self.curr_epsilon():
             action = np.random.choice(self.action_vector)
         # Choose the greedy action
         else:
-            max_q = self.session.run(self.predicted_q, feed_dict={self.state: state,
-                                                                  self.is_update_LRU_order: is_up_LRU_ord})
+            # We expand the agent_input dimensions here to run the graph for batch_size = 1 -- action selection
+            max_q = self.session.run(self.predicted_q, feed_dict={self.state: np.expand_dims(agent_input, axis=0),
+                                                                  self.is_update_LRU_order: 1})
             log.debug("Max. Q value: {}".format(max_q[0]))
             action = self.action_vector[max_q[0]]
             log.debug("Chosen action: {}".format(action))
 
-        self.global_step += 1
         return action
 
-    def optimize(self):
-        # Get the batches from replay memory
+    def _optimize(self):
+        # Get the batches from replay memory and run optimizer
         state_batch, action_batch, q_n_batch = self.replay_memory.get_batch(self.batch_size)
-        action_batch_indices = [agent.action_vector.index(a) for a in action_batch]
-        session.run(agent.optimizer, feed_dict={agent.state: state_batch,
-                                                agent.action_index: action_batch_indices,
-                                                agent.target_q: q_n_batch,
-                                                agent.is_update_LRU_order: 0})
+        action_batch_indices = [self.action_vector.index(a) for a in action_batch]
+        self.session.run(self.optimizer, feed_dict={self.state: state_batch,
+                                                    self.action_index: action_batch_indices,
+                                                    self.target_q: q_n_batch,
+                                                    self.is_update_LRU_order: 0})
         log.debug("Optimizer has been run.")
+
+    # Note that this function calculate only one Q at a time.
+    def _calculate_bootstrapped_q_value(self):
+
+        discounted_reward = np.dot(self._rewards_deque, self._gammas)
+        bootstrap_value = np.amax(self.session.run(self.pred_q_values,
+                                                   feed_dict={self.state: [self._agent_input_list[self.episode_step]],
+                                                              self.is_update_LRU_order: 0}))
+        disc_bootstrap_value = self.discount_factor ** self.n_step_horizon * bootstrap_value
+        q_value = discounted_reward + disc_bootstrap_value
+
+        # Store calculated Q value
+        self._q_values_list.append(q_value)
+
+    def _calculate_q_values_at_episode_end(self):
+        pass
+
+    def _insert_into_replay_memory(self, state, action, q):
+        self.replay_memory.append()
 
     def curr_epsilon(self):
         eps = self.initial_epsilon
@@ -252,19 +326,7 @@ class NECAgent:
 
         return final_indices
 
-    @staticmethod
-    def _riffle_arrays(array_1, array_2):
-        if len(array_1.shape) == 1:
-            array_1 = np.expand_dims(array_1, axis=0)
-            array_2 = np.expand_dims(array_2, axis=0)
-
-        tf_indices = np.empty([array_1.shape[0], array_1.shape[1] * 2], dtype=array_1.dtype)
-        # Riffle the action indices with ann output indices
-        tf_indices[:, 0::2] = array_1
-        tf_indices[:, 1::2] = array_2
-        return tf_indices.reshape((array_1.shape[0], array_1.shape[1], 2))
-
-    def tabular_like_update(self, states, state_hashes, actions, q_ns, index_rebuild=False):
+    def _tabular_like_update(self, states, state_hashes, actions, q_ns, index_rebuild):
         log.debug("Tabular like update has been started.")
         # Making np arrays
         states = np.asarray(states)
@@ -375,14 +437,102 @@ class NECAgent:
 
         log.debug("Tabular like update has been run.")
 
+    def save_action_and_reward(self, a, r):
+        self._agent_action_list.append(a)
+        self._rewards_deque.append(r)
+
+    def _save_q_value(self, q):
+        self._q_values_list.append(q)
+
+    def _discount(self, x):
+        a = np.asarray(x)
+        return lfilter([1], [1, -self.discount_factor], a[::-1], axis=0)[::-1]
+
     def _dnd_lengths(self):
         return [len(self.tf_index__state_hash[a]) for a in self.action_vector]
 
     def _dnd_length(self, a):
         return len(self.tf_index__state_hash[a])
 
+    def _create_conv_layers(self):
+        """
+        Create convolutional layers in the Tensorflow graph according to the hyperparameters, using Tensorflow slim
+        library.
+
+        Returns
+        -------
+        conv_layers: list
+            The list of convolutional operations.
+
+        """
+        lengths_set = {len(o) for o in (self._num_outputs, self._kernel_size, self._stride)}
+        if len(lengths_set) != 1:
+            msg = "The lengths of the conv. layers params vector should be same. Lengths: {}, Vectors: {}".format(
+                [len(o) for o in (self._num_outputs, self._kernel_size, self._stride)],
+                (self._num_outputs, self._kernel_size, self._stride))
+            raise ValueError(msg)
+        conv_layers = []
+        inputs = [self.state]
+        for i, (num_out, kernel, stride) in enumerate(zip(self._num_outputs, self._kernel_size, self._stride)):
+            layer = slim.conv2d(activation_fn=tf.nn.elu, inputs=inputs[i], num_outputs=num_out,
+                                kernel_size=kernel, stride=stride, padding='SAME')
+            conv_layers.append(layer)
+            inputs.append(layer)
+        return conv_layers
+
+    @staticmethod
+    def _riffle_arrays(array_1, array_2):
+        if len(array_1.shape) == 1:
+            array_1 = np.expand_dims(array_1, axis=0)
+            array_2 = np.expand_dims(array_2, axis=0)
+
+        tf_indices = np.empty([array_1.shape[0], array_1.shape[1] * 2], dtype=array_1.dtype)
+        # Riffle the action indices with ann output indices
+        tf_indices[:, 0::2] = array_1
+        tf_indices[:, 1::2] = array_2
+        return tf_indices.reshape((array_1.shape[0], array_1.shape[1], 2))
+
+    def _initial_frame_stacking(self, processed_obs):
+        return np.stack((processed_obs, ) * self.frame_stacking_number, axis=2)
+
+    @staticmethod
+    def _frame_stacking(s_t, o_t):  # Ahol az "s_t" a korábban stackkelt 4 frame, "o_t" pedig az új observation
+        s_t1 = np.append(s_t[:, :, 1:], np.expand_dims(o_t, axis=2), axis=2)
+        return s_t1
+
+    def save_agent(self, path):
+        self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
+        # az LRU mappán belül hozza létre az actionokhöz tartozó .npy fájlt.
+        # Ebből létre lehet hozni a "self.state_hash__tf_index" is!
+        try:
+            os.mkdir(path + '/LRU_' + str(self.global_step))
+        except FileExistsError:
+            pass
+        for a, dict in self.tf_index__state_hash.items():
+            np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
+
+        # TODO: Save replay memory here
+
+    def load_agent(self, path, glob_step_num):
+        self.saver.restore(self.session, path + "/model_" + str(glob_step_num) + '.cptk')
+        self.global_step = glob_step_num
+        for a in self.action_vector:
+            act_LRU = np.load(path + '/LRU_' + str(glob_step_num) + "/" + str(a) + '.npy')
+            # azért reversed, hogy a lista legelső elemét rakja bele utoljára, így az lesz az MRU
+            for tf_index, state_hash in reversed(act_LRU):
+                self.tf_index__state_hash[a][tf_index] = state_hash
+                self.state_hash__tf_index[a][state_hash] = tf_index
+
     def _log_hyperparameters(self):
         pass
+
+    @staticmethod
+    def _create_tf_session(only_cpu):
+        if only_cpu:
+            config = tf.ConfigProto(device_count={"GPU": 0})
+            return tf.Session(config=config)
+        else:
+            return tf.Session()
 
 
 class AnnSearch:
@@ -479,28 +629,6 @@ def py_func(func, inp, Tout, stateful=True, name=None, grad=None):
         return tf.py_func(func, inp, Tout, stateful=stateful, name=name)
 
 
-def image_preprocessor(state, size=(84, 84)):
-    state = state[32:195, :, :]
-    state = misc.imresize(state, size)
-    # greyscaling and normalizing state
-    state = np.dot(state[..., :3], np.array([0.299, 0.587, 0.114], dtype=np.float32)) / 255.0
-    return state
-
-
-def frame_stacking(s_t, o_t):  # Ahol az "s_t" a korábban stackkelt 4 frame, "o_t" pedig az új observation
-    s_t1 = np.append(s_t[:, :, 1:], np.expand_dims(o_t, axis=2), axis=2)
-    return s_t1
-
-
-def initial_frame_stacking(processed_obs):
-    return np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
-
-
-def discount(x, gamma):
-    a = np.asarray(x)
-    return lfilter([1], [1, -gamma], a[::-1], axis=0)[::-1]
-
-
 def setup_logging(level=logging.INFO, is_stream_handler=True, is_file_handler=False, file_handler_filename=None):
     log.setLevel(level)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -519,168 +647,3 @@ def setup_logging(level=logging.INFO, is_stream_handler=True, is_file_handler=Fa
             log.addHandler(fh)
         else:
             raise ValueError("file_handler_filename must not be None if is_file_handler = True")
-
-
-def create_tf_session(only_cpu=False):
-    if only_cpu:
-        config = tf.ConfigProto(device_count={"GPU": 0})
-        return tf.Session(config=config)
-    else:
-        return tf.Session()
-
-
-# ######################## MAIN LOOP ############################## #
-
-
-if __name__ == "__main__":
-
-    setup_logging(is_file_handler=True, file_handler_filename="C:/Work/temp/nec_agent/nec_log.txt")
-
-    session = create_tf_session()
-
-    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000)
-
-    # LOADING
-    # if True:
-    #     load_path = "C:/RL/nec_saves"
-    #     agent.load_agent(load_path, 2750)
-    #     rep_memory.load(load_path, 2750)
-    #     for action_index, act in enumerate(agent.action_vector):
-    #         dnd_keys = session.run(agent.dnd_keys)
-    #         agent.anns[act].build_index(dnd_keys[action_index][:agent._dnd_length(act)])
-    n_hor = 100
-    max_ep_num = 500000
-    gamma = 0.99
-    gammas = list(map(lambda x: gamma ** x, range(n_hor)))
-    batch_size = 32
-
-    env = gym.make('Pong-v4')
-
-    tf.summary.FileWriter("C:/Work/temp/nec_agent", graph=session.graph)
-
-    games_reward_list = []
-
-    for i in range(max_ep_num):
-        rewards_deque = deque()
-        states_list = []
-        observation_list = []
-        states_hashes_list = []
-        actions_list = []
-        q_n_list = []
-        done = False
-        mini_game_done = False
-        local_step = 0
-        mini_game_counter = 0
-
-        mini_game_rewards_list = []
-        local_step_list = []
-
-        observation = env.reset()
-        processed_obs = image_preprocessor(observation)
-        observation_list.append(processed_obs)
-        agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
-        states_list.append(agent_input)
-        states_hashes_list.append(hash(agent_input.tobytes()))
-
-        log.info("#### Pong new game started. (21 points.) Game number: {} ####".format(i + 1))
-
-        while not done or not mini_game_done:
-            action = agent.get_action(np.expand_dims(agent_input, axis=0), 1)
-            actions_list.append(action)
-
-            observation, reward, done, info = env.step(action)
-            rewards_deque.append(reward)
-            local_step += 1
-
-            # mean_reward += reward
-
-            # mini_game_done változó beállítása, mert a gym env 21 pong játékot vesz egy játéknak
-            mini_game_done = True if abs(reward) == 1 else False
-
-            if not mini_game_done:
-                #  képet megfelelőre alakítom, stackelem majd appendelem és a hash-t is appendelem
-                processed_obs = image_preprocessor(observation)
-                observation_list.append(processed_obs)
-                agent_input = frame_stacking(agent_input, processed_obs)
-                states_list.append(agent_input)
-                states_hashes_list.append(hash(agent_input.tobytes()))
-
-                if agent.global_step > 1000:
-                    agent.optimize()
-
-                    #  nincs játék vége még és már volt n_hor-nyi lépés akkor kiszámolom a Q(N) értéket és hozzáadom
-                    #  a megfelelő vektort a replay memoryhoz
-                    # Ez azért fog működni, mert a végén pop-olunk és a reward deque hossza fix marad
-                    if len(rewards_deque) == n_hor:
-                        disc_reward = np.dot(rewards_deque, gammas)
-                        bootstrap_value = gamma ** n_hor * np.amax(session.run(agent.pred_q_values,
-                                                                               feed_dict={agent.state: [states_list[local_step]],
-                                                                                          agent.is_update_LRU_order: 0}))
-                        q_n = disc_reward + bootstrap_value
-                        q_n_list.append(q_n)
-                        rep_memory.append([observation_list[local_step - n_hor], actions_list[local_step - n_hor], q_n],
-                                          mini_game_done)
-                        rewards_deque.popleft()
-
-            else:
-                #  játék vége van kiszámolom a disc_rewardokat viszont az elsőnek n_hor darab rewardból
-                #  a másodiknak (n_hor-1) darab rewardból, a harmadiknak (n_hor-2) darab rewardból, ésígytovább.
-                #  A bootstrap value itt mindig 0 tehát a Q(N) maga a discounted reward. Majd berakosgatom a replay memoryba
-
-                # Itt van lekezelve az, hogy a játék elején Monte-Carlo return-nel számoljuk ki a state-action value-kat.
-                q_ns = discount(rewards_deque, gamma)
-                j = len(rewards_deque)
-                for count, (o, a, q_n) in enumerate(zip(observation_list[-j:], actions_list[-j:], q_ns)):
-                    q_n_list.append(q_n)
-                    e_e = False
-                    if count == len(observation_list[-j:]) - 1:
-                        e_e = True
-                    rep_memory.append([o, a, q_n], e_e)
-
-                # Tabular like update and ANN index rebuild
-                index_rebuild = not bool(mini_game_counter % 10)
-                agent.tabular_like_update(states_list, states_hashes_list, actions_list, q_n_list,
-                                          index_rebuild=index_rebuild)
-
-                # log.info("Mini-game (for 1 point) is finished.")
-                mini_game_reward = sum(rewards_deque)
-                mini_game_rewards_list.append(mini_game_reward)
-                local_step_list.append(local_step)
-                #log.info("Step number: {}, Mini-game reward: {}".format(local_step, mini_game_reward))
-
-                rewards_deque = deque()
-                states_list = []
-                observation_list = []
-                states_hashes_list = []
-                actions_list = []
-                q_n_list = []
-                local_step = 0
-
-                #  képet megfelelőre alakítom, stackelem majd appendelem és a hash-t is appendelem
-                processed_obs = image_preprocessor(observation)
-                observation_list.append(processed_obs)
-                agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
-                states_list.append(agent_input)
-                states_hashes_list.append(hash(agent_input.tobytes()))
-
-                #log.info("New mini-game has been started.")
-                #if agent.global_step %
-                mini_game_counter += 1
-
-        mini_games_reward_sum = sum(mini_game_rewards_list)
-        games_reward_list.append(mini_games_reward_sum)
-        log.info("Mini-game step numbers: {}".format(local_step_list))
-        log.info("Mini-game rewards: {}".format(mini_game_rewards_list))
-
-        log.info("Score for a (21-points) game: {}".format(mini_games_reward_sum))
-        for act, dnd in agent.tf_index__state_hash.items():
-            log.info("DND length for action {}: {}".format(act, len(dnd)))
-        log.info("Global step number: {}".format(agent.global_step))
-
-        if (i + 1) % 10 == 0 and i != 0:
-            log.info("Score average for last 10 (21-points) game: {}".format(sum(games_reward_list[-10:]) / 10))
-
-        if (i + 1) % 5 == 0 and i != 0:
-            save_path = "C:/Work/temp/nec_agent"
-            agent.save_agent(save_path)
-            rep_memory.save(save_path, agent.global_step)
