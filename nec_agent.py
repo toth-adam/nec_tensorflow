@@ -1,5 +1,6 @@
 import logging
 import sys
+import os
 import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
@@ -62,7 +63,7 @@ class NECAgent:
         # Tensorflow graph building
 
         # With frame stacking. (84x84 mert a conv háló validja miatt nem kell hozzáfűzni a képhez)
-        self.state = tf.placeholder(shape=[None, 84, 84, 4], dtype=tf.float32, name="state")
+        self.state = tf.placeholder(shape=[None, 42, 42, 4], dtype=tf.float32, name="state")
 
         self.dnd_keys = tf.Variable(
             tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
@@ -143,6 +144,8 @@ class NECAgent:
         self.check_op = tf.add_check_numerics_ops()
 
         self.session.run(self.init_op)
+
+        self.saver = tf.train.Saver(max_to_keep=5)
 
     def get_action(self, state, is_up_LRU_ord):
 
@@ -336,6 +339,27 @@ class NECAgent:
     def _dnd_length(self, a):
         return len(self.tf_index__state_hash[a])
 
+    def save_agent(self, path):
+        self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
+        # az LRU mappán belül hozza létre az actionokhöz tartozó .npy fájlt.
+        # Ebből létre lehet hozni a "self.state_hash__tf_index" is!
+        try:
+            os.mkdir(path + '/LRU_' + str(self.global_step))
+        except FileExistsError:
+            pass
+        for a, dict in self.tf_index__state_hash.items():
+            np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
+
+    def load_agent(self, path, glob_step_num):
+        self.saver.restore(self.session, path + "/model_" + str(glob_step_num) + '.cptk')
+        self.global_step = glob_step_num
+        for a in self.action_vector:
+            act_LRU = np.load(path + '/LRU_' + str(glob_step_num) + "/" + str(a) + '.npy')
+            # azért reversed, hogy a lista legelső elemét rakja bele utoljára, így az lesz az MRU
+            for tf_index, state_hash in reversed(act_LRU):
+                self.tf_index__state_hash[a][tf_index] = state_hash
+                self.state_hash__tf_index[a][state_hash] = tf_index
+
 
 class AnnSearch:
 
@@ -446,7 +470,7 @@ def py_func(func, inp, Tout, stateful=True, name=None, grad=None):
 
 def image_preprocessor(state):
     state = state[32:195, :, :]
-    state = misc.imresize(state, [84, 84])
+    state = misc.imresize(state, [42, 42])
     # greyscaling and normalizing state
     state = np.dot(state[..., :3], np.array([0.299, 0.587, 0.114], dtype=np.float32)) / 255.0
     return state
@@ -465,58 +489,72 @@ def discount(x, gamma):
     a = np.asarray(x)
     return lfilter([1], [1, -gamma], a[::-1], axis=0)[::-1]
 
-if __name__ == "__main_":
-    session = tf.Session()
-    env = gym.make('Pong-v4')
-    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=1e5, neighbor_number=50)
-
-    observation = env.reset()
-    for _ in range(30):
-        observation,_,_,_=env.step(0)
-    processed_obs = image_preprocessor(observation)
-
-    import matplotlib.pyplot as plt
-
-    plt.imshow(processed_obs, cmap="gray")
-    plt.show()
-    #dnd_q_value, full_dnd = session.run([agent.nn_state_values, agent.dnd_values], feed_dict={agent.ann_search: [[0, 1], [1,0]]})
-    #print(dnd_q_value)
-    ##print("#############x")
-    ##print(full_dnd)
-    #fake_frame = np.random.rand(2, 84, 84, 4)
-#
-    #session.run([agent.dnd_value_write, agent.dnd_key_write],
-    #                 feed_dict={agent.state: fake_frame,
-    #                            agent.dnd_value_update: np.asarray([[1], [2]]),
-    #                            agent.dnd_write_index: np.asarray([[0, 1], [1, 0]])})
-    #print(session.run([agent.dnd_values, agent.dnd_keys]))
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
+    neighbor_number = 50
+    rep_memory_size = 1e5
+    dnd_max_memory = 100000
+
+    session = tf.Session()
+    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=dnd_max_memory, neighbor_number=neighbor_number)
+    rep_memory = ReplayMemory(size=rep_memory_size)
+
+    load_path = "C:/Work/temp/nec_agent"
+    agent.load_agent(load_path, 97446)
+    # rep_memory.load(load_path, )
+    for action_index, act in enumerate(agent.action_vector):
+        dnd_keys = session.run(agent.dnd_keys)
+        agent.anns[act].build_index(dnd_keys[action_index][:agent._dnd_length(act)])
+
+    env = gym.make('Pong-v4')
+
+    observation = env.reset()
+    processed_obs = image_preprocessor(observation)
+    agent_input = np.stack((processed_obs, processed_obs, processed_obs, processed_obs), axis=2)
+    im = plt.imshow(observation)
+    done = False
+    while not done:
+        action = agent.get_action(np.expand_dims(agent_input, axis=0), 1)
+        observation, _, done, _ = env.step(action)
+        processed_obs = image_preprocessor(observation)
+        agent_input = frame_stacking(agent_input, processed_obs)
+        im.set_data(observation)
+        plt.draw()
+        plt.pause(0.005)
+
+
+if __name__ == "__main_":
     log.setLevel(logging.INFO)
 
-    # ch = logging.StreamHandler(sys.stdout)
-    fh = logging.FileHandler("/home/atoth/Coding/nec_tensorflow/log/log.txt")
-    # ch.setLevel(logging.INFO)
+    ch = logging.StreamHandler(sys.stdout)
+    fh = logging.FileHandler("C:/Work/temp/nec_agent/regi_replay_memory.txt")
+    ch.setLevel(logging.INFO)
     fh.setLevel(logging.INFO)
 
     # create formatter
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # add formatter to ch
-    # ch.setFormatter(formatter)
+    ch.setFormatter(formatter)
     fh.setFormatter(formatter)
 
     # add ch to logger
-    # log.addHandler(ch)
+    log.addHandler(ch)
     log.addHandler(fh)
 
     # config = tf.ConfigProto(
     #     device_count={'GPU': 0}
     # )
     # session = tf.Session(config=config)
+    tf.set_random_seed(4)
     session = tf.Session()
-    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=100000, neighbor_number=50)
-    rep_memory = ReplayMemory()
+    neighbor_number = 50
+    rep_memory_size = 1e5
+    dnd_max_memory = 100000
+    agent = NECAgent(session, [0, 2, 3], dnd_max_memory=dnd_max_memory, neighbor_number=neighbor_number)
+    rep_memory = ReplayMemory(size=rep_memory_size)
     n_hor = 100
     max_ep_num = 500000
     gamma = 0.99
@@ -529,6 +567,13 @@ if __name__ == "__main__":
     tf.summary.FileWriter("C:/Work/temp/nec_agent", graph=session.graph)
 
     games_reward_list = []
+
+    conv_shape = agent.state.shape
+
+    log.info("State-size: {ss}, Batch-size: {bs}, Tabular learning rate: {tlr}, Adams learning rate: {alr}, NN: {nn}\n"
+             "Discount factor: {df}, N-step lookahead: {look}, Replay memory size: {rep}, DND max memory: {dnd}".format(
+              ss=conv_shape, bs=batch_size, tlr=agent.tab_alpha, alr=agent.adam_learning_rate, nn=neighbor_number,
+              df=gamma, look=n_hor, rep=rep_memory_size, dnd=dnd_max_memory))
 
     for i in range(max_ep_num):
         rewards_deque = deque()
@@ -649,3 +694,6 @@ if __name__ == "__main__":
 
         if (i + 1) % 10 == 0 and i != 0:
             log.info("Score average for last 10 (21-points) game: {}".format(sum(games_reward_list[-10:]) / 10))
+            save_path = "C:/Work/temp/nec_agent"
+            agent.save_agent(save_path)
+            rep_memory.save(save_path, agent.global_step)

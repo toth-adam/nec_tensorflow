@@ -14,3 +14,13 @@ class ReplayMemory:
         rand_samp_list = [self.rep_mem[i] for i in rand_samp_num]
         trans_rand_sample = list(map(list, zip(*rand_samp_list)))
         return trans_rand_sample[0], trans_rand_sample[1], trans_rand_sample[2]  # state, action, q_n
+
+    def save(self, path, glob_step_num):
+        np.save(path + '/rep_mem_' + str(glob_step_num) + '.npy', self.rep_mem)
+        # np.save(path + '/episode_end_' + str(glob_step_num) + '.npy', self.episode_end)
+
+    def load(self, path, glob_step_num):
+        r_m = np.load(path + '/rep_mem_' + str(glob_step_num) + '.npy')
+        # e_e = np.load(path + '/episode_end_' + str(glob_step_num) + '.npy')
+        for r_m_i in r_m:
+            self.append(r_m_i)
