@@ -23,7 +23,7 @@ class NECAgent:
                  backprop_learning_rate=1e-4, tabular_learning_rate=0.5e-2, fully_conn_neurons=128,
                  input_shape=(84, 84, 4), kernel_size=((3, 3), (3, 3), (3, 3), (3, 3)), num_outputs=(32, 32, 32, 32),
                  stride=((2, 2), (2, 2), (2, 2), (2, 2)), delta=1e-3, rep_memory_size=1e5, batch_size=32,
-                 frame_stacking_number=4, n_step_horizon=100, discount_factor=0.99, log_save_directory=None):
+                 n_step_horizon=100, discount_factor=0.99, log_save_directory=None):
 
         self._cpu_only = cpu_only
 
@@ -54,7 +54,7 @@ class NECAgent:
         # Environment specific parameters
         self.action_vector = action_vector
         self.number_of_actions = len(action_vector)
-        self.frame_stacking_number = frame_stacking_number
+        self.frame_stacking_number = input_shape[-1]
 
         # ANN Search index
         self.anns = {k: AnnSearch(neighbor_number, dnd_max_memory, k) for k in action_vector}
@@ -187,19 +187,14 @@ class NECAgent:
             # Calculate bootstrap Q value as early as possible, so we can insert the corresponding (S, A, Q) tuple into
             # the replay memory. Because of this, the agent may sample from this example during the next _optimize()
             # call. (Intentionally)
-            # This function only gets called if episode_step >= n_step_horizon
             if len(self._rewards_deque) == self.n_step_horizon:
-                self._calculate_bootstrapped_q_value()
+                q = self._calculate_bootstrapped_q_value()
                 # Store (S, A, Q) in the replay memory
-
-                rep_memory.append([observation_list[local_step - n_hor], actions_list[local_step - n_hor], q_n],
-                                  mini_game_done)
+                self._add_to_replay_memory(q)
                 # We pop the leftmost element from the rewards deque, hence the condition before
                 # _calculate_bootstrapped_q_value() remains True until the episode end.
                 # (Also we do not need this element anymore, since we have already used it for calculating the Q value.)
                 self._rewards_deque.popleft()
-
-
 
         self.global_step += 1
         self.episode_step += 1
@@ -208,24 +203,19 @@ class NECAgent:
 
     # This is the main function which we call in different environments after an episode is finished.
     def update(self):
-
         #  játék vége van kiszámolom a disc_rewardokat viszont az elsőnek n_hor darab rewardból
         #  a másodiknak (n_hor-1) darab rewardból, a harmadiknak (n_hor-2) darab rewardból, ésígytovább.
         #  A bootstrap value itt mindig 0 tehát a Q(N) maga a discounted reward. Majd berakosgatom a replay memoryba
-
         # Itt van lekezelve az, hogy a játék elején Monte-Carlo return-nel számoljuk ki a state-action value-kat.
-        q_ns = discount(rewards_deque, gamma)
-        j = len(rewards_deque)
-        for count, (o, a, q_n) in enumerate(zip(observation_list[-j:], actions_list[-j:], q_ns)):
-            q_n_list.append(q_n)
-            e_e = False
-            if count == len(observation_list[-j:]) - 1:
-                e_e = True
-            rep_memory.append([o, a, q_n], e_e)
+
+        q_ns = self._discount(self._rewards_deque)
+        self._add_to_replay_memory_episode_end(q_ns)
+        index_rebuild = not bool(self.episode_number % 10)
 
         # TODO: Index rebuild bool here  -- index_rebuild = not bool(mini_game_counter % 10)
 
-        self._tabular_like_update()
+        self._tabular_like_update(self._agent_input_list, self._agent_input_hashes_list,
+                                  self._agent_action_list, self._q_values_list, index_rebuild)
 
     def reset_episode_related_containers(self):
         self._observation_list = []
@@ -275,10 +265,26 @@ class NECAgent:
                                                     self.is_update_LRU_order: 0})
         log.debug("Optimizer has been run.")
 
+    def _add_to_replay_memory(self, q, episode_end=False):
+        s = self._observation_list[self.episode_step - self.n_step_horizon]
+        a = self._agent_action_list[self.episode_step - self.n_step_horizon]
+        self.replay_memory.append((s, a, q), episode_end)
+
+    def _add_to_replay_memory_episode_end(self, q_list):
+        j = len(self._rewards_deque)
+        for i, (o, a, q_n) in enumerate(zip(self._observation_list[-j:], self._agent_action_list[-j:], q_list)):
+            self._q_values_list.append(q_n)
+            e_e = False
+            if i == j - 1:
+                e_e = True
+            self.replay_memory.append([o, a, q_n], e_e)
+
     # Note that this function calculate only one Q at a time.
     def _calculate_bootstrapped_q_value(self):
-
-        discounted_reward = np.dot(self._rewards_deque, self._gammas)
+        try:
+            discounted_reward = np.dot(self._rewards_deque, self._gammas)
+        except ValueError:
+            print("kakai")
         bootstrap_value = np.amax(self.session.run(self.pred_q_values,
                                                    feed_dict={self.state: [self._agent_input_list[self.episode_step]],
                                                               self.is_update_LRU_order: 0}))
@@ -287,6 +293,7 @@ class NECAgent:
 
         # Store calculated Q value
         self._q_values_list.append(q_value)
+        return q_value
 
     def _calculate_q_values_at_episode_end(self):
         pass
