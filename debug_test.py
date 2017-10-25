@@ -8,14 +8,14 @@ def image_preprocessor(state):
 
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "C:/Work/temp/nec_agent",
+    "log_save_directory": "/home/atoth/temp",
     "dnd_max_memory": 10,
     "neighbor_number": 2,
     "input_shape": (5, 5, 2),
-    "batch_size": 2,
+    "batch_size": 1,
     "n_step_horizon": 3,
     "epsilon_decay_bounds": (10, 25),
-    "optimization_start": 10
+    "optimization_start": 15
 }
 
 agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)

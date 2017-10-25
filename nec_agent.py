@@ -170,6 +170,7 @@ class NECAgent:
         self._q_values_list = []
 
         # Logging
+        self.log_save_directory = log_save_directory
         self._log_hyperparameters()
 
         # Create discount factor vector
@@ -283,7 +284,7 @@ class NECAgent:
             e_e = False
             if i == j - 1:
                 e_e = True
-            self.replay_memory.append([o, a, q_n], e_e)
+            self.replay_memory.append((o, a, q_n), e_e)
 
     # Note that this function calculate only one Q at a time.
     def _calculate_bootstrapped_q_value(self):
@@ -297,12 +298,6 @@ class NECAgent:
         # Store calculated Q value
         self._q_values_list.append(q_value)
         return q_value
-
-    def _calculate_q_values_at_episode_end(self):
-        pass
-
-    def _insert_into_replay_memory(self, state, action, q):
-        self.replay_memory.append()
 
     def curr_epsilon(self):
         eps = self.initial_epsilon
@@ -534,7 +529,8 @@ class NECAgent:
                 self.state_hash__tf_index[a][state_hash] = tf_index
 
     def _log_hyperparameters(self):
-        pass
+        if self.log_save_directory:
+            tf.summary.FileWriter(self.log_save_directory, graph=self.session.graph)
 
     @staticmethod
     def _create_tf_session(only_cpu):
