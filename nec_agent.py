@@ -23,7 +23,8 @@ class NECAgent:
                  backprop_learning_rate=1e-4, tabular_learning_rate=0.5e-2, fully_conn_neurons=128,
                  input_shape=(84, 84, 4), kernel_size=((3, 3), (3, 3), (3, 3), (3, 3)), num_outputs=(32, 32, 32, 32),
                  stride=((2, 2), (2, 2), (2, 2), (2, 2)), delta=1e-3, rep_memory_size=1e5, batch_size=32,
-                 n_step_horizon=100, discount_factor=0.99, log_save_directory=None):
+                 n_step_horizon=100, discount_factor=0.99, log_save_directory=None, epsilon_decay_bounds=(5000, 25000),
+                 optimization_start=1000):
 
         self._cpu_only = cpu_only
 
@@ -31,10 +32,12 @@ class NECAgent:
 
         self.delta = delta
         self.initial_epsilon = 1
+        self.epsilon_decay_bounds = epsilon_decay_bounds
 
         # Optimizer parameters
         self.adam_learning_rate = backprop_learning_rate
         self.batch_size = batch_size
+        self.optimization_start = optimization_start
 
         # Tabular parameters
         self.tab_alpha = tabular_learning_rate
@@ -172,6 +175,9 @@ class NECAgent:
         # Create discount factor vector
         self._gammas = list(map(lambda x: self.discount_factor ** x, range(self.n_step_horizon)))
 
+        # Create epsilon decay rate (Now it is linearly decreasing between 1 and 0.001)
+        self._epsilon_decay_rate = (1 - 0.001) / (self.epsilon_decay_bounds[1] - self.epsilon_decay_bounds[0])
+
     # This is the main function which we call in different environments during playing
     def get_action(self, processed_observation):
         # Get the agent input (frame-stacking) using the preprocessed observation
@@ -179,10 +185,9 @@ class NECAgent:
         agent_input = self._get_agent_input(processed_observation)
         # Get the action
         action = self._get_action(agent_input)
-        # Optimize if the global_step number is above 1000 (making sure we have enough elements in the replay memory and
-        # each DND)
-        # TODO: Make this number a parameter
-        if self.global_step > 1000:
+        # Optimize if the global_step number is above optimization_start (making sure we have enough elements in the
+        # replay memory and each DND)
+        if self.global_step > self.optimization_start:
             self._optimize()
             # Calculate bootstrap Q value as early as possible, so we can insert the corresponding (S, A, Q) tuple into
             # the replay memory. Because of this, the agent may sample from this example during the next _optimize()
@@ -237,6 +242,7 @@ class NECAgent:
         # Saving the relevant quantities
         self._observation_list.append(processed_observation)
         self._agent_input_list.append(agent_input)
+        print(hash(agent_input.tobytes()))
         self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
         return agent_input
 
@@ -281,10 +287,7 @@ class NECAgent:
 
     # Note that this function calculate only one Q at a time.
     def _calculate_bootstrapped_q_value(self):
-        try:
-            discounted_reward = np.dot(self._rewards_deque, self._gammas)
-        except ValueError:
-            print("kakai")
+        discounted_reward = np.dot(self._rewards_deque, self._gammas)
         bootstrap_value = np.amax(self.session.run(self.pred_q_values,
                                                    feed_dict={self.state: [self._agent_input_list[self.episode_step]],
                                                               self.is_update_LRU_order: 0}))
@@ -303,9 +306,9 @@ class NECAgent:
 
     def curr_epsilon(self):
         eps = self.initial_epsilon
-        if 4999 < self.global_step < 25000:
-            eps = self.initial_epsilon - ((self.global_step - 5000) * 4.995e-5)
-        elif self.global_step > 24999:
+        if self.epsilon_decay_bounds[0] <= self.global_step < self.epsilon_decay_bounds[1]:
+            eps = self.initial_epsilon - ((self.global_step - self.epsilon_decay_bounds[0]) * self._epsilon_decay_rate)
+        elif self.global_step >= self.epsilon_decay_bounds[1]:
             eps = 0.001
         return eps
 
