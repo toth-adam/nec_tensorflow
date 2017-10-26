@@ -1,4 +1,3 @@
-import logging
 import numpy as np
 from scipy import misc
 
@@ -14,8 +13,8 @@ def image_preprocessor(state, size=(84, 84)):
     state = np.dot(state[..., :3], np.array([0.299, 0.587, 0.114], dtype=np.float32)) / 255.0
     return state
 
-log = logging.getLogger(__name__)
-setup_logging(log)
+
+setup_logging()
 
 nec_agent_parameters_dict = {
     "log_save_directory": "C:/Work/temp/nec_agent",
@@ -46,7 +45,7 @@ for i in range(max_ep_num):
     observation = env.reset()
     processed_obs = image_preprocessor(observation)
 
-    log.info("#### Pong new game started. (21 points.) Game number: {} ####".format(i + 1))
+    #log.info("#### Pong new game started. (21 points.) Game number: {} ####".format(i + 1))
 
     while not done:
         action = agent.get_action(processed_obs)

@@ -42,7 +42,8 @@ class ReplayMemory:
             batch_actions.append(self.rep_mem[rand_index][1])
             batch_q_ns.append(self.rep_mem[rand_index][2])
 
-        return np.array(batch_states, dtype=np.float32),  batch_actions, batch_q_ns
+        return (np.array(batch_states, dtype=np.float32),  np.array(batch_actions, dtype=np.int32),
+                np.array(batch_q_ns, dtype=np.float32))
 
     def save(self, path, glob_step_num):
         np.save(path + '/rep_mem_' + str(glob_step_num) + '.npy', self.rep_mem)

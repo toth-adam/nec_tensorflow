@@ -243,7 +243,6 @@ class NECAgent:
         # Saving the relevant quantities
         self._observation_list.append(processed_observation)
         self._agent_input_list.append(agent_input)
-        print(hash(agent_input.tobytes()))
         self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
         return agent_input
 
@@ -275,6 +274,7 @@ class NECAgent:
     def _add_to_replay_memory(self, q, episode_end=False):
         s = self._observation_list[self.episode_step - self.n_step_horizon]
         a = self._agent_action_list[self.episode_step - self.n_step_horizon]
+        self._check_list_ids(s, a, q)
         self.replay_memory.append((s, a, q), episode_end)
 
     def _add_to_replay_memory_episode_end(self, q_list):
@@ -284,6 +284,7 @@ class NECAgent:
             e_e = False
             if i == j - 1:
                 e_e = True
+            self._check_list_ids(o, a, q_n)
             self.replay_memory.append((o, a, q_n), e_e)
 
     # Note that this function calculate only one Q at a time.
@@ -334,10 +335,9 @@ class NECAgent:
     def _tabular_like_update(self, states, state_hashes, actions, q_ns, index_rebuild):
         log.debug("Tabular like update has been started.")
         # Making np arrays
-        states = np.asarray(states)
-        state_hashes = np.asarray(state_hashes)
+        states = np.asarray(states, dtype=np.float32)
         q_ns = np.asarray(q_ns)
-        actions = np.asarray(actions)
+        actions = np.asarray(actions, dtype=np.int32)
 
         action_indices = np.asarray([self.action_vector.index(act) for act in actions])
 
@@ -443,7 +443,8 @@ class NECAgent:
         log.debug("Tabular like update has been run.")
 
     def save_action_and_reward(self, a, r):
-        self._agent_action_list.append(a)
+        # Convert action to float here just for checking purposes. _check_list_ids()
+        self._agent_action_list.append(float(a))
         self._rewards_deque.append(r)
 
     def _save_q_value(self, q):
@@ -531,6 +532,45 @@ class NECAgent:
     def _log_hyperparameters(self):
         if self.log_save_directory:
             tf.summary.FileWriter(self.log_save_directory, graph=self.session.graph)
+        log.info("The hyperparameters of the agent are:\n"
+                 "Optimizer parameters\n"
+                 "--------------------\n"
+                 "Learning rate: {lr}\n"
+                 "Batch size for optimization: {bs}\n"
+                 "Global step number when optimization starts: {os}\n"
+                 "\n"
+                 "Tabular parameters\n"
+                 "------------------\n"
+                 "Q update learning rate: {qlr}\n"
+                 "DND maximum memory: {dnd}\n"
+                 "\n"
+                 "Reinforcement learning parameters\n"
+                 "---------------------------------\n"
+                 "N-step horizon: {n}\n"
+                 "Discount factor: {df}\n"
+                 "Starting epsilon: {init_e}\n"
+                 "Final epsilon: 0.001\n"
+                 "Epsilon is linearly decaying between global step number {eps_d[0]} and {eps_d[1]}\n"
+                 "\n"
+                 "Convolutional layer parameters\n"
+                 "------------------------------\n"
+                 "Input shape: {inp_s}\n"
+                 "Fully connected neuron number: {fcn}\n"
+                 "Kernel sizes: {ks}\n"
+                 "Strides: {ss}\n"
+                 "Number of outputs of each layer: {num_o}\n"
+                 "\n"
+                 "Environment specific parameters\n"
+                 "-------------------------------\n"
+                 "Available actions: {act}\n"
+                 "Frame stacking number: {fs}\n".format(lr=self.adam_learning_rate, bs=self.batch_size,
+                                                      os=self.optimization_start, qlr=self.tab_alpha,
+                                                      dnd=self.dnd_max_memory, n=self.n_step_horizon,
+                                                      df=self.discount_factor, init_e=self.initial_epsilon,
+                                                      eps_d=self.epsilon_decay_bounds, inp_s=self._input_shape,
+                                                      fcn=self.fully_connected_neuron, ks=self._kernel_size,
+                                                      ss=self._stride, num_o=self._num_outputs, act=self.action_vector,
+                                                      fs=self.frame_stacking_number))
 
     @staticmethod
     def _create_tf_session(only_cpu):
@@ -539,6 +579,17 @@ class NECAgent:
             return tf.Session(config=config)
         else:
             return tf.Session()
+
+    def _check_list_ids(self, s, a, q):
+        def get_index(l, o):
+            for i, j in enumerate(l):
+                if id(j) == id(o):
+                    return i
+        i_1 = get_index(self._observation_list, s)
+        i_2 = get_index(self._agent_action_list, a)
+        i_3 = get_index(self._q_values_list, q)
+        if not (i_1 == i_2 and i_2 == i_3):
+            raise ValueError("The indices are wrong: {}".format((i_1, i_2, i_3)))
 
 
 class AnnSearch:

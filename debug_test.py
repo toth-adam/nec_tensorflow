@@ -1,14 +1,14 @@
 import numpy as np
 
-from nec_agent import NECAgent
+from nec_agent import NECAgent, setup_logging
 
 
 def image_preprocessor(state):
     return state
 
 
+setup_logging()
 nec_agent_parameters_dict = {
-    "log_save_directory": "/home/atoth/temp",
     "dnd_max_memory": 10,
     "neighbor_number": 2,
     "input_shape": (5, 5, 2),
