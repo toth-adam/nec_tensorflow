@@ -4,7 +4,7 @@ from PIL import Image
 
 from catchertest import CatcherforTest
 
-from nec_agent import NECAgent
+from nec_agent import NECAgent, setup_logging
 #import tensorflow as tf
 
 # def image_preprocessor(state, size=(40, 40)):
@@ -15,8 +15,8 @@ from nec_agent import NECAgent
 #     return state
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "C:/Work/temp/nec_agent",
-    "dnd_max_memory": 50000,
+    "log_save_directory": "D:/RL/nec_saves",
+    "dnd_max_memory": 100000,
     "input_shape": (40, 40, 2),
     "fully_conn_neurons": 64,
     "neighbor_number": 25,
@@ -26,11 +26,11 @@ nec_agent_parameters_dict = {
     "stride": ((2, 2), (2, 2)),
     "batch_size": 32,
     "epsilon_decay_bounds": (3000, 20000),
-    "backprop_learning_rate": 1e-4,
-    "tabular_learning_rate": 1e-3
+    "backprop_learning_rate": 0.5e-4,
+    "tabular_learning_rate": 0.5e-3
 
 }
-
+setup_logging()
 agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
 #tf.summary.FileWriter("C:/RL/nec_saves", graph=agent.session.graph)
 
@@ -47,7 +47,7 @@ for i in range(max_ep_num):
     observation = env.reset()
     processed_obs = observation  # nincs benne az image preproc
 
-    if i % 100 == 0:
+    if i % 50 == 0:
         print("Elkezdődött játék sorszáma: ", i+1)
         print("Összes lépés: ", (i+1)*18)
 
@@ -63,6 +63,6 @@ for i in range(max_ep_num):
     agent.reset_episode_related_containers()
 
     games_reward_list.append(reward)
-    if i % 100 == 0:
-        print("Ucso 100 game reward összege: ", sum(games_reward_list))
+    if i % 50 == 0:
+        print("Ucso 50 game reward összege: ", sum(games_reward_list))
         games_reward_list = []

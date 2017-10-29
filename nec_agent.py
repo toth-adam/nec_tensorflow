@@ -11,6 +11,7 @@ import tensorflow.contrib.slim as slim
 
 from lru import LRU
 from pyflann import FLANN
+from mmh3 import hash128
 
 from replay_memory import ReplayMemory
 
@@ -24,7 +25,7 @@ class NECAgent:
                  input_shape=(84, 84, 4), kernel_size=((3, 3), (3, 3), (3, 3), (3, 3)), num_outputs=(32, 32, 32, 32),
                  stride=((2, 2), (2, 2), (2, 2), (2, 2)), delta=1e-3, rep_memory_size=1e5, batch_size=32,
                  n_step_horizon=100, discount_factor=0.99, log_save_directory=None, epsilon_decay_bounds=(5000, 25000),
-                 optimization_start=1000):
+                 optimization_start=1000, ann_rebuild_freq=10):
 
         self._cpu_only = cpu_only
 
@@ -60,6 +61,7 @@ class NECAgent:
         self.frame_stacking_number = input_shape[-1]
 
         # ANN Search index
+        self.ann_rebuild_freq = ann_rebuild_freq
         self.anns = {k: AnnSearch(neighbor_number, dnd_max_memory, k) for k in action_vector}
 
         # Replay memory
@@ -216,12 +218,16 @@ class NECAgent:
 
         q_ns = self._discount(self._rewards_deque)
         self._add_to_replay_memory_episode_end(q_ns)
-        index_rebuild = not bool(self.episode_number % 10)
 
-        # TODO: Index rebuild bool here  -- index_rebuild = not bool(mini_game_counter % 10)
+        # DND Lengths before modification
+        dnd_lengths = self._dnd_lengths()
 
-        self._tabular_like_update(self._agent_input_list, self._agent_input_hashes_list,
-                                  self._agent_action_list, self._q_values_list, index_rebuild)
+        actions, batch_valid_indices, batch_indices_for_ann, state_embeddings, batch_cond_vector =\
+            self._tabular_like_update(self._agent_input_list, self._agent_input_hashes_list, self._agent_action_list,
+                                      self._q_values_list)
+
+        self._ann_index_update(actions, batch_valid_indices, batch_indices_for_ann, state_embeddings, batch_cond_vector,
+                               dnd_lengths)
 
     def reset_episode_related_containers(self):
         self._observation_list = []
@@ -243,7 +249,7 @@ class NECAgent:
         # Saving the relevant quantities
         self._observation_list.append(processed_observation)
         self._agent_input_list.append(agent_input)
-        self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
+        self._agent_input_hashes_list.append(hash128(agent_input.tobytes()))
         return agent_input
 
     def _get_action(self, agent_input):
@@ -274,7 +280,7 @@ class NECAgent:
     def _add_to_replay_memory(self, q, episode_end=False):
         s = self._observation_list[self.episode_step - self.n_step_horizon]
         a = self._agent_action_list[self.episode_step - self.n_step_horizon]
-        self._check_list_ids(s, a, q)
+        # self._check_list_ids(s, a, q)
         self.replay_memory.append((s, a, q), episode_end)
 
     def _add_to_replay_memory_episode_end(self, q_list):
@@ -284,7 +290,7 @@ class NECAgent:
             e_e = False
             if i == j - 1:
                 e_e = True
-            self._check_list_ids(o, a, q_n)
+            # self._check_list_ids(o, a, q_n)
             self.replay_memory.append((o, a, q_n), e_e)
 
     # Note that this function calculate only one Q at a time.
@@ -332,7 +338,7 @@ class NECAgent:
 
         return final_indices
 
-    def _tabular_like_update(self, states, state_hashes, actions, q_ns, index_rebuild):
+    def _tabular_like_update(self, states, state_hashes, actions, q_ns):
         log.debug("Tabular like update has been started.")
         # Making np arrays
         states = np.asarray(states, dtype=np.float32)
@@ -340,9 +346,6 @@ class NECAgent:
         actions = np.asarray(actions, dtype=np.int32)
 
         action_indices = np.asarray([self.action_vector.index(act) for act in actions])
-
-        # DND Lengths before modification
-        dnd_lengths = self._dnd_lengths()
 
         dnd_q_values = np.empty(q_ns.shape, dtype=np.float32)
         dnd_gather_indices = np.asarray([self.state_hash__tf_index[a][sh] if sh in self.state_hash__tf_index[a]
@@ -425,6 +428,13 @@ class NECAgent:
                                                   self.dnd_value_update: batch_update_values,
                                                   self.dnd_write_index: batch_indices})
 
+        log.debug("Tabular like update has been run.")
+
+        return actions, batch_valid_indices, batch_indices_for_ann, state_embeddings, batch_cond_vector
+
+    def _ann_index_update(self, actions, batch_valid_indices, batch_indices_for_ann, state_embeddings,
+                          batch_cond_vector, dnd_lengths):
+        index_rebuild = not bool(self.episode_number % self.ann_rebuild_freq)
         # FLANN Add point - every batch
         if not index_rebuild:
             for a in self.action_vector:
@@ -439,8 +449,6 @@ class NECAgent:
                 action_index = self.action_vector.index(act)
                 # Ez a jó (kövi sor)
                 ann.build_index(dnd_keys[action_index][:self._dnd_length(act)])
-
-        log.debug("Tabular like update has been run.")
 
     def save_action_and_reward(self, a, r):
         # Convert action to float here just for checking purposes. _check_list_ids()
@@ -563,14 +571,16 @@ class NECAgent:
                  "Environment specific parameters\n"
                  "-------------------------------\n"
                  "Available actions: {act}\n"
-                 "Frame stacking number: {fs}\n".format(lr=self.adam_learning_rate, bs=self.batch_size,
+                 "Frame stacking number: {fs}\n"
+                 "\n"
+                 "ANN update frequency(episode number): {auf}".format(lr=self.adam_learning_rate, bs=self.batch_size,
                                                       os=self.optimization_start, qlr=self.tab_alpha,
                                                       dnd=self.dnd_max_memory, n=self.n_step_horizon,
                                                       df=self.discount_factor, init_e=self.initial_epsilon,
                                                       eps_d=self.epsilon_decay_bounds, inp_s=self._input_shape,
                                                       fcn=self.fully_connected_neuron, ks=self._kernel_size,
                                                       ss=self._stride, num_o=self._num_outputs, act=self.action_vector,
-                                                      fs=self.frame_stacking_number))
+                                                      fs=self.frame_stacking_number, auf=self.ann_rebuild_freq))
 
     @staticmethod
     def _create_tf_session(only_cpu):
