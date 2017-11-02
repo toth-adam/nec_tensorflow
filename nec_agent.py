@@ -76,6 +76,10 @@ class NECAgent:
         # Tensorflow Session object
         self.session = self._create_tf_session(self._cpu_only)
 
+        # Tensorflow FileWriter object
+        if log_save_directory:
+            self.summary_writer = tf.summary.FileWriter(log_save_directory)
+
         # Step numbers
         self.global_step = 0
         self.episode_step = 0
@@ -145,10 +149,10 @@ class NECAgent:
         self.target_q = tf.placeholder(tf.float32, [None], name="target_Q")
         self.q_value = tf.reduce_sum(tf.multiply(self.pred_q_values, self.action_onehot), axis=1)
         self.td_err = tf.subtract(self.target_q, self.q_value, name="td_error")
-        total_loss = tf.square(self.td_err, name="total_loss")
+        self.total_loss = tf.square(self.td_err, name="total_loss")
 
         # Optimizer
-        self.optimizer = tf.train.AdamOptimizer(self.adam_learning_rate).minimize(total_loss)
+        self.optimizer = tf.train.AdamOptimizer(self.adam_learning_rate).minimize(self.total_loss)
 
         # ----------- AUXILIARY ----------- #
         # ----------- TF related ----------- #
@@ -190,7 +194,7 @@ class NECAgent:
         action = self._get_action(agent_input)
         # Optimize if the global_step number is above optimization_start (making sure we have enough elements in the
         # replay memory and each DND)
-        if self.global_step > self.optimization_start:
+        if self.global_step >= self.optimization_start:
             self._optimize()
             # Calculate bootstrap Q value as early as possible, so we can insert the corresponding (S, A, Q) tuple into
             # the replay memory. Because of this, the agent may sample from this example during the next _optimize()
@@ -271,11 +275,32 @@ class NECAgent:
         # Get the batches from replay memory and run optimizer
         state_batch, action_batch, q_n_batch = self.replay_memory.get_batch(self.batch_size)
         action_batch_indices = [self.action_vector.index(a) for a in action_batch]
-        self.session.run(self.optimizer, feed_dict={self.state: state_batch,
-                                                    self.action_index: action_batch_indices,
-                                                    self.target_q: q_n_batch,
-                                                    self.is_update_LRU_order: 0})
+        batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer], feed_dict={self.state: state_batch,
+                                                                          self.action_index: action_batch_indices,
+                                                                          self.target_q: q_n_batch,
+                                                                          self.is_update_LRU_order: 0})
+
+        # Mean of the total loss for Tensorboard visualization
+        if self.log_save_directory:
+            self._tensorboard_summary_writer(batch_total_loss)
+
         log.debug("Optimizer has been run.")
+
+    def _tensorboard_summary_writer(self, batch_total_loss):
+        if self.global_step == self.optimization_start:
+            self._loss_list = []
+            self._mean_size = 0
+
+        self._loss_list.append(batch_total_loss)
+        self._mean_size += 1
+        if self._mean_size % 10 == 0:
+            mean_total_loss = np.mean(self._loss_list)
+            summary = tf.Summary()
+            summary.value.add(tag='Total Loss', simple_value=float(mean_total_loss))
+            self.summary_writer.add_summary(summary, self.global_step)
+            self.summary_writer.flush()
+            self._loss_list = []
+            self._mean_size = 0
 
     def _add_to_replay_memory(self, q, episode_end=False):
         s = self._observation_list[self.episode_step - self.n_step_horizon]
