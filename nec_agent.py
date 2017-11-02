@@ -60,8 +60,9 @@ class NECAgent:
         self.number_of_actions = len(action_vector)
         self.frame_stacking_number = input_shape[-1]
 
-        # ANN Search index
+        # ANN Search
         self.ann_rebuild_freq = ann_rebuild_freq
+        self.neighbor_number = neighbor_number
         self.anns = {k: AnnSearch(neighbor_number, dnd_max_memory, k) for k in action_vector}
 
         # Replay memory
@@ -75,10 +76,6 @@ class NECAgent:
 
         # Tensorflow Session object
         self.session = self._create_tf_session(self._cpu_only)
-
-        # Tensorflow FileWriter object
-        if log_save_directory:
-            self.summary_writer = tf.summary.FileWriter(log_save_directory)
 
         # Step numbers
         self.global_step = 0
@@ -138,8 +135,8 @@ class NECAgent:
         # (Eq. 1)
         self.squeeze = tf.squeeze(self.nn_state_values, axis=3)
         self.pred_q_values = tf.reduce_sum(self.squeeze * self.normalised_weightings, axis=2,
-                                           name="predicted_q_values")
-        self.predicted_q = tf.argmax(self.pred_q_values, axis=1, name="predicted_q")
+                                           name="predicted_Q_values")
+        self.predicted_q = tf.argmax(self.pred_q_values, axis=1, name="predicted_Q_arg")
 
         # This has to be an iterable, e.g.: [1, 0, 0]
         self.action_index = tf.placeholder(tf.int32, [None], name="action")
@@ -147,7 +144,8 @@ class NECAgent:
 
         # Loss Function
         self.target_q = tf.placeholder(tf.float32, [None], name="target_Q")
-        self.q_value = tf.reduce_sum(tf.multiply(self.pred_q_values, self.action_onehot), axis=1)
+        self.q_value = tf.reduce_sum(tf.multiply(self.pred_q_values, self.action_onehot), axis=1,
+                                     name="calculated_Q_value")
         self.td_err = tf.subtract(self.target_q, self.q_value, name="td_error")
         self.total_loss = tf.square(self.td_err, name="total_loss")
 
@@ -175,8 +173,10 @@ class NECAgent:
         self._rewards_deque = deque()
         self._q_values_list = []
 
-        # Logging
+        # Logging and TF FileWriter
         self.log_save_directory = log_save_directory
+        if self.log_save_directory:
+            self.summary_writer = tf.summary.FileWriter(self.log_save_directory, graph=self.session.graph)
         self._log_hyperparameters()
 
         # Create discount factor vector
@@ -563,8 +563,6 @@ class NECAgent:
                 self.state_hash__tf_index[a][state_hash] = tf_index
 
     def _log_hyperparameters(self):
-        if self.log_save_directory:
-            tf.summary.FileWriter(self.log_save_directory, graph=self.session.graph)
         log.info("The hyperparameters of the agent are:\n"
                  "Optimizer parameters\n"
                  "--------------------\n"
@@ -598,14 +596,18 @@ class NECAgent:
                  "Available actions: {act}\n"
                  "Frame stacking number: {fs}\n"
                  "\n"
-                 "ANN update frequency(episode number): {auf}".format(lr=self.adam_learning_rate, bs=self.batch_size,
-                                                      os=self.optimization_start, qlr=self.tab_alpha,
-                                                      dnd=self.dnd_max_memory, n=self.n_step_horizon,
-                                                      df=self.discount_factor, init_e=self.initial_epsilon,
-                                                      eps_d=self.epsilon_decay_bounds, inp_s=self._input_shape,
-                                                      fcn=self.fully_connected_neuron, ks=self._kernel_size,
-                                                      ss=self._stride, num_o=self._num_outputs, act=self.action_vector,
-                                                      fs=self.frame_stacking_number, auf=self.ann_rebuild_freq))
+                 "Approx. Nearest Neighbor search parameters\n"
+                 "------------------------------------------\n"
+                 "ANN update frequency(episode number): {auf}\n"
+                 "Nearest Neighbor search number: {nn}".format(lr=self.adam_learning_rate, bs=self.batch_size,
+                                                               os=self.optimization_start, qlr=self.tab_alpha,
+                                                               dnd=self.dnd_max_memory, n=self.n_step_horizon,
+                                                               df=self.discount_factor, init_e=self.initial_epsilon,
+                                                               eps_d=self.epsilon_decay_bounds, inp_s=self._input_shape,
+                                                               fcn=self.fully_connected_neuron, ks=self._kernel_size,
+                                                               ss=self._stride, num_o=self._num_outputs,
+                                                               act=self.action_vector, fs=self.frame_stacking_number,
+                                                               auf=self.ann_rebuild_freq, nn=self.neighbor_number))
 
     @staticmethod
     def _create_tf_session(only_cpu):
