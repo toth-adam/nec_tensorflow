@@ -82,6 +82,9 @@ class NECAgent:
         self.episode_step = 0
         self.episode_number = 0
 
+        # For logging the total loss
+        self.create_list_for_total_losses = True
+
         # ----------- TENSORFLOW GRAPH BUILDING ----------- #
 
         self.state = tf.placeholder(shape=[None, *self._input_shape], dtype=tf.float32, name="state")
@@ -244,6 +247,46 @@ class NECAgent:
         # Increment episode number
         self.episode_number += 1
 
+    def save_action_and_reward(self, a, r):
+        # Convert action to float here just for checking purposes. _check_list_ids()
+        self._agent_action_list.append(float(a))
+        self._rewards_deque.append(r)
+
+    def agent_save(self, path):
+        self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
+
+    def full_save(self, path):
+        self.agent_save(path)
+        # az LRU mappán belül hozza létre az actionokhöz tartozó .npy fájlt.
+        # Ebből létre lehet hozni a "self.state_hash__tf_index" is!
+        try:
+            os.mkdir(path + '/LRU_' + str(self.global_step))
+        except FileExistsError:
+            pass
+        for a, dict in self.tf_index__state_hash.items():
+            np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
+
+        self.replay_memory.save(path, self.global_step)
+
+    def agent_load(self, path, glob_step_num):
+        self.saver.restore(self.session, path + "/model_" + str(glob_step_num) + '.cptk')
+        self.global_step = glob_step_num
+
+    def full_load(self, path, glob_step_num):
+        self.agent_load(path, glob_step_num)
+        for a in self.action_vector:
+            act_LRU = np.load(path + '/LRU_' + str(glob_step_num) + "/" + str(a) + '.npy')
+            # azért reversed, hogy a lista legelső elemét rakja bele utoljára, így az lesz az MRU
+            for tf_index, state_hash in reversed(act_LRU):
+                self.tf_index__state_hash[a][tf_index] = state_hash
+                self.state_hash__tf_index[a][state_hash] = tf_index
+        # ANN index building
+        for action_index, act in enumerate(self.action_vector):
+            dnd_keys = self.session.run(self.dnd_keys)
+            self.anns[act].build_index(dnd_keys[action_index][:self._dnd_length(act)])
+
+        self.replay_memory.load(path, glob_step_num)
+
     # Should be a pre-processed observation
     def _get_agent_input(self, processed_observation):
         if self.episode_step == 0:
@@ -253,7 +296,8 @@ class NECAgent:
         # Saving the relevant quantities
         self._observation_list.append(processed_observation)
         self._agent_input_list.append(agent_input)
-        self._agent_input_hashes_list.append(hash128(agent_input.tobytes()))
+        self._agent_input_hashes_list.append(hash128(agent_input))
+        #self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
         return agent_input
 
     def _get_action(self, agent_input):
@@ -287,7 +331,9 @@ class NECAgent:
         log.debug("Optimizer has been run.")
 
     def _tensorboard_summary_writer(self, batch_total_loss):
-        if self.global_step == self.optimization_start:
+        # if self.global_step == self.optimization_start:
+        if self.create_list_for_total_losses:
+            self.create_list_for_total_losses = False
             self._loss_list = []
             self._mean_size = 0
 
@@ -475,11 +521,6 @@ class NECAgent:
                 # Ez a jó (kövi sor)
                 ann.build_index(dnd_keys[action_index][:self._dnd_length(act)])
 
-    def save_action_and_reward(self, a, r):
-        # Convert action to float here just for checking purposes. _check_list_ids()
-        self._agent_action_list.append(float(a))
-        self._rewards_deque.append(r)
-
     def _save_q_value(self, q):
         self._q_values_list.append(q)
 
@@ -538,29 +579,6 @@ class NECAgent:
     def _frame_stacking(s_t, o_t):  # Ahol az "s_t" a korábban stackkelt 4 frame, "o_t" pedig az új observation
         s_t1 = np.append(s_t[:, :, 1:], np.expand_dims(o_t, axis=2), axis=2)
         return s_t1
-
-    def save_agent(self, path):
-        self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
-        # az LRU mappán belül hozza létre az actionokhöz tartozó .npy fájlt.
-        # Ebből létre lehet hozni a "self.state_hash__tf_index" is!
-        try:
-            os.mkdir(path + '/LRU_' + str(self.global_step))
-        except FileExistsError:
-            pass
-        for a, dict in self.tf_index__state_hash.items():
-            np.save(path + '/LRU_' + str(self.global_step) + "/" + str(a) + '.npy', dict.items())
-
-        # TODO: Save replay memory here
-
-    def load_agent(self, path, glob_step_num):
-        self.saver.restore(self.session, path + "/model_" + str(glob_step_num) + '.cptk')
-        self.global_step = glob_step_num
-        for a in self.action_vector:
-            act_LRU = np.load(path + '/LRU_' + str(glob_step_num) + "/" + str(a) + '.npy')
-            # azért reversed, hogy a lista legelső elemét rakja bele utoljára, így az lesz az MRU
-            for tf_index, state_hash in reversed(act_LRU):
-                self.tf_index__state_hash[a][tf_index] = state_hash
-                self.state_hash__tf_index[a][state_hash] = tf_index
 
     def _log_hyperparameters(self):
         log.info("The hyperparameters of the agent are:\n"

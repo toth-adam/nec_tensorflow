@@ -5,7 +5,7 @@ from PIL import Image
 from catchertest import CatcherforTest
 
 from nec_agent import NECAgent, setup_logging
-#import tensorflow as tf
+# import tensorflow as tf
 
 # def image_preprocessor(state, size=(40, 40)):
 #     #state = state[32:195, :, :]
@@ -15,24 +15,24 @@ from nec_agent import NECAgent, setup_logging
 #     return state
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "D:/RL/nec_saves",
-    "dnd_max_memory": 100000,
+    "log_save_directory": "C:/RL/NEC",
+    "dnd_max_memory": 34000,
     "input_shape": (40, 40, 2),
     "fully_conn_neurons": 64,
     "neighbor_number": 25,
-    "num_outputs": (16, 16),
+    "num_outputs": (8,),
     "n_step_horizon": 10,
-    "kernel_size": ((3, 3), (3, 3)),
-    "stride": ((2, 2), (2, 2)),
+    "kernel_size": ((3, 3),),
+    "stride": ((1, 1),),
     "batch_size": 32,
-    "epsilon_decay_bounds": (3000, 20000),
-    "backprop_learning_rate": 0.5e-4,
-    "tabular_learning_rate": 0.5e-3
+    "epsilon_decay_bounds": (2000, 15000),
+    "backprop_learning_rate": 1e-4,
+    "tabular_learning_rate": 1e-3
 
 }
 setup_logging()
 agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
-#tf.summary.FileWriter("C:/RL/nec_saves", graph=agent.session.graph)
+agent.full_load("C:/RL/NEC/Full_save", 1800)
 
 max_ep_num = 500000
 
@@ -47,9 +47,14 @@ for i in range(max_ep_num):
     observation = env.reset()
     processed_obs = observation  # nincs benne az image preproc
 
-    if i % 50 == 0:
+    if i % 50 == 0 and i != 0:
         print("Elkezdődött játék sorszáma: ", i+1)
         print("Összes lépés: ", (i+1)*18)
+
+    # if i % 100 == 0 and i != 0:
+    #     agent.full_save("C:/RL/NEC/Full_save")
+    #     print("mentett")
+    #     break
 
     while not done:
         action = agent.get_action(processed_obs)

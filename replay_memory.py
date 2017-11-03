@@ -1,5 +1,6 @@
 from collections import deque
 import numpy as np
+import os
 
 
 class ReplayMemory:
@@ -46,11 +47,15 @@ class ReplayMemory:
                 np.array(batch_q_ns, dtype=np.float32))
 
     def save(self, path, glob_step_num):
-        np.save(path + '/rep_mem_' + str(glob_step_num) + '.npy', self.rep_mem)
-        np.save(path + '/episode_end_' + str(glob_step_num) + '.npy', self.episode_end)
+        try:
+            os.mkdir(path + '/replay_memory_' + str(glob_step_num))
+        except FileExistsError:
+            pass
+        np.save(path + '/replay_memory_' + str(glob_step_num) + '/memory.npy', self.rep_mem)
+        np.save(path + '/replay_memory_' + str(glob_step_num) + '/episode_end.npy', self.episode_end)
 
     def load(self, path, glob_step_num):
-        r_m = np.load(path + '/rep_mem_' + str(glob_step_num) + '.npy')
-        e_e = np.load(path + '/episode_end_' + str(glob_step_num) + '.npy')
+        r_m = np.load(path + '/replay_memory_' + str(glob_step_num) + '/memory.npy')
+        e_e = np.load(path + '/replay_memory_' + str(glob_step_num) + '/episode_end.npy')
         for r_m_i, e_e_i in zip(r_m, e_e):
             self.append(r_m_i, e_e_i)
