@@ -9,6 +9,7 @@ def image_preprocessor(state):
 
 setup_logging()
 nec_agent_parameters_dict = {
+    "log_save_directory": "C:/Work/temp/nec_agent",
     "dnd_max_memory": 10,
     "neighbor_number": 2,
     "input_shape": (5, 5, 2),
