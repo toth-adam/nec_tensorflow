@@ -3,6 +3,10 @@ Neural Episodic Control Agent
 
 This is an implementation of (a slightly modified version of) Deepmind's `Neural Episodic Control <https://arxiv.org/pdf/1703.01988.pdf>`_.
 
+  The modifications:
+    - The order of the LRU is modified only when the agent interacts its environment.
+    - The convolutional layers are from the A3C's implementation of OpenAI. 
+
 Dependencies
 ------------
 
