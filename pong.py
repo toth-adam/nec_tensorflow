@@ -6,7 +6,7 @@ import gym
 from nec_agent import NECAgent, setup_logging
 
 
-def image_preprocessor(state, size=(84, 84)):
+def image_preprocessor(state, size=(42, 42)):
     state = state[32:195, :, :]
     state = misc.imresize(state, size)
     # greyscaling and normalizing state
@@ -17,8 +17,9 @@ def image_preprocessor(state, size=(84, 84)):
 setup_logging()
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "C:/Work/temp/nec_agent",
-    "dnd_max_memory": 100000
+    "log_save_directory": "C:/RL/NEC",
+    "dnd_max_memory": 100000,
+    "input_shape": (42, 42, 3)
 }
 
 agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
@@ -28,6 +29,8 @@ max_ep_num = 500000
 env = gym.make('Pong-v4')
 
 games_reward_list = []
+games_step_num_list = []
+game_step_number = 0
 
 for i in range(max_ep_num):
     done = False
@@ -47,6 +50,33 @@ for i in range(max_ep_num):
 
         processed_obs = image_preprocessor(observation)
 
+        game_step_number += 1
+
         if mini_game_done:
             agent.update()
             agent.reset_episode_related_containers()
+
+            games_reward_list.append(reward)
+            games_step_num_list.append(game_step_number)
+            game_step_number = 0
+
+    # For logging purposes
+    unique, counts = np.unique(games_reward_list, return_counts=True)
+
+    print()
+    print("Number of total games: ", i+1)
+    print("Total step numbers: ", agent.global_step)
+    print()
+    print("Number of games: ", len(games_reward_list))
+    print("Number of won (1) and lost (-1) games: ", dict(zip(unique, counts)))
+    print("Mean step number: ", np.mean(games_step_num_list))
+    print()
+    print("Game's rewards list:")
+    print(games_reward_list)
+    print()
+    print("Game's steps number:")
+    print(games_step_num_list)
+
+    games_reward_list = []
+    games_step_num_list = []
+
