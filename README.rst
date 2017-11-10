@@ -15,7 +15,7 @@ Dependencies
 - **scipy**: https://github.com/scipy/scipy
 - **LRU**: https://github.com/amitdev/lru-dict
 - **FLANN**: https://github.com/Erotemic/flann
-- **mmh3**: https://github.com/aappleby/smhasher
+- **mmh3**: https://github.com/aappleby/smhasher (python wrapper: https://pypi.python.org/pypi/mmh3)
 - **OpenAI gym**: https://github.com/openai/gym
 
 Notes
