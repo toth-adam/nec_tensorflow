@@ -7,7 +7,7 @@ import gym
 from nec_agent import NECAgent, setup_logging
 
 
-def image_preprocessor(state, size=(42, 42)):
+def image_preprocessor(state, size=(84, 84)):
     state = state[32:195, :, :]
     state = misc.imresize(state, size)
     # greyscaling and normalizing state
@@ -40,6 +40,8 @@ game_step_number = 0
 last_save_time = time.time()
 
 for i in range(max_ep_num):
+    start_time = time.time()
+
     done = False
     mini_game_done = False
 
@@ -84,6 +86,7 @@ for i in range(max_ep_num):
     print("Games' steps number:")
     print(games_step_num_list)
     print("-----------------------------------------------------------------------------")
+
 
     games_reward_list = []
     games_step_num_list = []

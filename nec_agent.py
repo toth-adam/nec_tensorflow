@@ -8,6 +8,7 @@ from scipy.signal import lfilter
 
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
+from tensorflow.python.client import timeline
 
 from lru import LRU
 from pyflann import FLANN
@@ -17,6 +18,8 @@ from replay_memory import ReplayMemory
 
 
 log = logging.getLogger(__name__)
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# os.environ["LD_LIBRARY_PATH"] += os.pathsep +
 
 
 class NECAgent:
@@ -118,8 +121,8 @@ class NECAgent:
         # action selection for new frames; we do not modify the order if we run the optimizer.)
         self.is_update_LRU_order = tf.placeholder(tf.int32, None, name="is_LRU_order_update")
         # Custom function to handle Approximate Nearest Neighbor search
-        self.ann_search = py_func(self._search_ann, [self.state_embedding, self.dnd_keys, self.is_update_LRU_order],
-                                  tf.int32, name="ann_search", grad=_ann_gradient)
+        self.ann_search = tf.py_func(self._search_ann, [self.state_embedding, self.is_update_LRU_order],
+                                     tf.int32, name="ann_search")
 
         # Gather operations to select from DND (according to ann search outputs)
         self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
@@ -187,6 +190,10 @@ class NECAgent:
 
         # Create epsilon decay rate (Now it is linearly decreasing between 1 and 0.001)
         self._epsilon_decay_rate = (1 - 0.001) / (self.epsilon_decay_bounds[1] - self.epsilon_decay_bounds[0])
+
+        # Majd kibasszuk innen
+        # self.__options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+        # self.__run_metadata = tf.RunMetadata()
 
     # This is the main function which we call in different environments during playing
     def get_action(self, processed_observation):
@@ -322,13 +329,21 @@ class NECAgent:
         batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer], feed_dict={self.state: state_batch,
                                                                           self.action_index: action_batch_indices,
                                                                           self.target_q: q_n_batch,
-                                                                          self.is_update_LRU_order: 0})
+                                                                          self.is_update_LRU_order: 0},)
+                                               # options=self.__options, run_metadata=self.__run_metadata)
 
         # Mean of the total loss for Tensorboard visualization
         if self.log_save_directory:
             self._tensorboard_summary_writer(batch_total_loss)
 
         log.debug("Optimizer has been run.")
+
+        # fetched_timeline = timeline.Timeline(self.__run_metadata.step_stats)
+        # chrome_trace = fetched_timeline.generate_chrome_trace_format()
+        # file = "/home/david/projects/temp/kaki.json"
+        # with open(file, "w") as f:
+        #     f.write(chrome_trace)
+        #     print("bugyi")
 
     def _tensorboard_summary_writer(self, batch_total_loss):
         # if self.global_step == self.optimization_start:
@@ -385,7 +400,7 @@ class NECAgent:
             eps = 0.001
         return eps
 
-    def _search_ann(self, search_keys, dnd_keys, update_LRU_order):
+    def _search_ann(self, search_keys, update_LRU_order):
         batch_indices = []
         for act, ann in self.anns.items():
             # These are the indices we get back from ANN search
@@ -726,19 +741,19 @@ class AnnSearch:
         return np.asarray(tf_var_dnd_indices, dtype=np.int32)
 
 
-def _ann_gradient(op, grad):
-    return grad
+# def _ann_gradient(op, grad):
+#     return grad
 
 
-# Define custom py_func which takes also a grad op as argument:
-def py_func(func, inp, Tout, stateful=True, name=None, grad=None):
-    # Need to generate a unique name to avoid duplicates:
-    rnd_name = 'PyFuncGrad' + str(np.random.randint(0, 1000000))
-
-    tf.RegisterGradient(rnd_name)(grad)  # see _MySquareGrad for grad example
-    g = tf.get_default_graph()
-    with g.gradient_override_map({"PyFunc": rnd_name}):
-        return tf.py_func(func, inp, Tout, stateful=stateful, name=name)
+# # Define custom py_func which takes also a grad op as argument:
+# def py_func(func, inp, Tout, stateful=True, name=None, grad=None):
+#     # Need to generate a unique name to avoid duplicates:
+#     rnd_name = 'PyFuncGrad' + str(np.random.randint(0, 1000000))
+#
+#     tf.RegisterGradient(rnd_name)(grad)  # see _MySquareGrad for grad example
+#     g = tf.get_default_graph()
+#     with g.gradient_override_map({"PyFunc": rnd_name}):
+#         return tf.py_func(func, inp, Tout, stateful=stateful, name=name)
 
 
 def setup_logging(level=logging.INFO, is_stream_handler=True, is_file_handler=False, file_handler_filename=None):
