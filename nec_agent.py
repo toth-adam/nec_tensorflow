@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 class NECAgent:
     def __init__(self, action_vector, cpu_only=False, dnd_max_memory=500000, neighbor_number=50,
-                 backprop_learning_rate=1e-4, tabular_learning_rate=0.5e-2, fully_conn_neurons=128,
+                 backprop_learning_rate=1e-4, tabular_learning_rate=1e-3, fully_conn_neurons=128,
                  input_shape=(84, 84, 4), kernel_size=((3, 3), (3, 3), (3, 3), (3, 3)), num_outputs=(32, 32, 32, 32),
                  stride=((2, 2), (2, 2), (2, 2), (2, 2)), delta=1e-3, rep_memory_size=1e5, batch_size=32,
                  n_step_horizon=100, discount_factor=0.99, log_save_directory=None, epsilon_decay_bounds=(5000, 25000),

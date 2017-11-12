@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import misc
+import time
 
 import gym
 
@@ -17,20 +18,26 @@ def image_preprocessor(state, size=(42, 42)):
 setup_logging()
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "C:/RL/NEC",
+    "log_save_directory": "D:/RL/nec_saves",
     "dnd_max_memory": 100000,
-    "input_shape": (42, 42, 3)
+    "input_shape": (42, 42, 3),
+    "kernel_size": ((3, 3), (3, 3), (3, 3)),
+    "num_outputs": (16, 16, 16),
+    "stride": ((2, 2), (2, 2), (2, 2))
 }
 
 agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
 
-max_ep_num = 500000
+agent.full_load("D:/RL/nec_saves", 1032039)
+
+max_ep_num = 50000
 
 env = gym.make('Pong-v4')
 
 games_reward_list = []
 games_step_num_list = []
 game_step_number = 0
+last_save_time = time.time()
 
 for i in range(max_ep_num):
     done = False
@@ -71,12 +78,18 @@ for i in range(max_ep_num):
     print("Number of won (1) and lost (-1) games: ", dict(zip(unique, counts)))
     print("Mean step number: ", np.mean(games_step_num_list))
     print()
-    print("Game's rewards list:")
+    print("Games' rewards list:")
     print(games_reward_list)
     print()
-    print("Game's steps number:")
+    print("Games' steps number:")
     print(games_step_num_list)
+    print("-----------------------------------------------------------------------------")
 
     games_reward_list = []
     games_step_num_list = []
+
+    if time.time() - last_save_time > 10800:
+        agent.full_save("D:/RL/nec_saves")
+        last_save_time = time.time()
+        print("/////////////////////////////////////// SAVE ////////////////////////////////////////")
 

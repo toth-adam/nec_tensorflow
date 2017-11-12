@@ -57,5 +57,6 @@ class ReplayMemory:
     def load(self, path, glob_step_num):
         r_m = np.load(path + '/replay_memory_' + str(glob_step_num) + '/memory.npy')
         e_e = np.load(path + '/replay_memory_' + str(glob_step_num) + '/episode_end.npy')
+
         for r_m_i, e_e_i in zip(r_m, e_e):
             self.append(r_m_i, e_e_i)
