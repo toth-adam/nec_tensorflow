@@ -7,7 +7,7 @@ import gym
 from nec_agent import NECAgent, setup_logging
 
 
-def image_preprocessor(state, size=(84, 84)):
+def image_preprocessor(state, size=(42, 42)):
     state = state[32:195, :, :]
     state = misc.imresize(state, size)
     # greyscaling and normalizing state
@@ -18,7 +18,7 @@ def image_preprocessor(state, size=(84, 84)):
 setup_logging()
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "D:/RL/nec_saves",
+    # "log_save_directory": "D:/RL/nec_saves",
     "dnd_max_memory": 100000,
     "input_shape": (42, 42, 3),
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
@@ -28,9 +28,9 @@ nec_agent_parameters_dict = {
 
 agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
 
-agent.full_load("D:/RL/nec_saves", 1032039)
+agent.full_load("D:/RL/nec_saves", 1170862)
 
-max_ep_num = 50000
+max_ep_num = 1
 
 env = gym.make('Pong-v4')
 
@@ -85,6 +85,7 @@ for i in range(max_ep_num):
     print()
     print("Games' steps number:")
     print(games_step_num_list)
+    print("Previously seen states number:", agent.seen_states_number)
     print("-----------------------------------------------------------------------------")
 
 

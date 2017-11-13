@@ -30,6 +30,9 @@ class NECAgent:
                  n_step_horizon=100, discount_factor=0.99, log_save_directory=None, epsilon_decay_bounds=(5000, 25000),
                  optimization_start=1000, ann_rebuild_freq=10):
 
+        # TÖRÖLNI
+        self.seen_states_number = 0
+
         self._cpu_only = cpu_only
 
         # ----------- HYPERPARAMETERS ----------- #
@@ -436,6 +439,10 @@ class NECAgent:
         dnd_q_values = np.empty(q_ns.shape, dtype=np.float32)
         dnd_gather_indices = np.asarray([self.state_hash__tf_index[a][sh] if sh in self.state_hash__tf_index[a]
                                          else None for sh, a in zip(state_hashes, actions)])
+        # TÖRÖLNI
+        for i in dnd_gather_indices:
+            if i != None:
+                self.seen_states_number += 1
 
         in_cond_vector = dnd_gather_indices != None
         indices = np.squeeze(self._riffle_arrays(action_indices[in_cond_vector], dnd_gather_indices[in_cond_vector]),
