@@ -49,4 +49,3 @@ for i in range(max_ep_num):
 
         if mini_game_done:
             agent.update()
-            agent.reset_episode_related_containers()
