@@ -235,6 +235,8 @@ class NECAgent:
 
         self._ann_index_update(actions, batch_valid_indices, batch_indices_for_ann, state_embeddings, batch_cond_vector,
                                dnd_lengths)
+        
+        self.reset_episode_related_containers()
 
     def reset_episode_related_containers(self):
         self._observation_list = []
