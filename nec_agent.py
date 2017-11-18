@@ -122,14 +122,15 @@ class NECAgent:
 
         # This placeholder is used to decide whether modify LRU order in the DND or not (We modify the order during
         # action selection for new frames; we do not modify the order if we run the optimizer.)
-        self.is_update_LRU_order = tf.placeholder(tf.int32, None, name="is_LRU_order_update")
+        # self.is_update_LRU_order = tf.placeholder(tf.int32, None, name="is_LRU_order_update")
         # Custom function to handle Approximate Nearest Neighbor search
-        self.ann_search = tf.py_func(self._search_ann, [self.state_embedding, self.is_update_LRU_order],
-                                     tf.int32, name="ann_search")
+        # self.ann_search = tf.py_func(self._search_ann, [self.state_embedding, self.is_update_LRU_order],
+        #                              tf.int32, name="ann_search")
+        self.ann_search_indices = tf.placeholder(tf.int32, None, name="ann_search_indices")
 
         # Gather operations to select from DND (according to ann search outputs)
-        self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search, name="nn_state_embeddings")
-        self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search, name="nn_state_values")
+        self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search_indices, name="nn_state_embeddings")
+        self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search_indices, name="nn_state_values")
 
         # DND calculation
         # expand_dims() is needed to subtract the key(s) (state_embedding) from neighboring keys (Eq. 5)
@@ -317,8 +318,11 @@ class NECAgent:
         # Choose the greedy action
         else:
             # We expand the agent_input dimensions here to run the graph for batch_size = 1 -- action selection
+            search_keys = self.session.run(self.state_embedding,
+                                           feed_dict={self.state: np.expand_dims(agent_input, axis=0)})
+            batch_indices = self._search_ann(search_keys, 1)
             max_q = self.session.run(self.predicted_q, feed_dict={self.state: np.expand_dims(agent_input, axis=0),
-                                                                  self.is_update_LRU_order: 1})
+                                                                  self.ann_search_indices: batch_indices})
             log.debug("Max. Q value: {}".format(max_q[0]))
             action = self.action_vector[max_q[0]]
             log.debug("Chosen action: {}".format(action))
@@ -329,10 +333,14 @@ class NECAgent:
         # Get the batches from replay memory and run optimizer
         state_batch, action_batch, q_n_batch = self.replay_memory.get_batch(self.batch_size)
         action_batch_indices = [self.action_vector.index(a) for a in action_batch]
-        batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer], feed_dict={self.state: state_batch,
-                                                                          self.action_index: action_batch_indices,
-                                                                          self.target_q: q_n_batch,
-                                                                          self.is_update_LRU_order: 0},)
+        search_keys = self.session.run(self.state_embedding,
+                                       feed_dict={self.state: state_batch})
+        batch_indices = self._search_ann(search_keys, 0)
+        batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer],
+                                               feed_dict={self.state: state_batch,
+                                                          self.ann_search_indices: batch_indices,
+                                                          self.action_index: action_batch_indices,
+                                                          self.target_q: q_n_batch})
                                                # options=self.__options, run_metadata=self.__run_metadata)
 
         # Mean of the total loss for Tensorboard visualization
@@ -385,9 +393,13 @@ class NECAgent:
     # Note that this function calculate only one Q at a time.
     def _calculate_bootstrapped_q_value(self):
         discounted_reward = np.dot(self._rewards_deque, self._gammas)
+        state = [self._agent_input_list[self.episode_step]]
+        search_keys = self.session.run(self.state_embedding,
+                                       feed_dict={self.state: state})
+        batch_indices = self._search_ann(search_keys, 0)
         bootstrap_value = np.amax(self.session.run(self.pred_q_values,
-                                                   feed_dict={self.state: [self._agent_input_list[self.episode_step]],
-                                                              self.is_update_LRU_order: 0}))
+                                                   feed_dict={self.state: state,
+                                                              self.ann_search_indices: batch_indices}))
         disc_bootstrap_value = self.discount_factor ** self.n_step_horizon * bootstrap_value
         q_value = discounted_reward + disc_bootstrap_value
 
@@ -448,7 +460,7 @@ class NECAgent:
         indices = np.squeeze(self._riffle_arrays(action_indices[in_cond_vector], dnd_gather_indices[in_cond_vector]),
                              axis=0)
 
-        dnd_q_vals = self.session.run(self.nn_state_values, feed_dict={self.ann_search: indices})
+        dnd_q_vals = self.session.run(self.nn_state_values, feed_dict={self.ann_search_indices: indices})
         dnd_q_vals = np.squeeze(dnd_q_vals, axis=1)
         dnd_q_values[in_cond_vector] = dnd_q_vals
 
