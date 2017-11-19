@@ -96,11 +96,17 @@ class NECAgent:
         self.state = tf.placeholder(shape=[None, *self._input_shape], dtype=tf.float32, name="state")
 
         # TF Variables representing the Differentiable Neural Dictionary (DND)
-        self.dnd_keys = tf.Variable(
-            tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
-            name="DND_keys")
-        self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, 1]),
-                                      name="DND_values")
+        # self.dnd_keys = tf.Variable(
+        #     tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
+        #     name="DND_keys")
+        # self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, 1]),
+        #                               name="DND_values")
+
+        self.dnd_keys = tf.get_variable("DND_keys",
+                                        [self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron],
+                                        initializer=tf.zeros_initializer)
+        self.dnd_values = tf.get_variable("DND_values", [self.number_of_actions, self.dnd_max_memory, 1],
+                                          initializer=tf.zeros_initializer)
 
         # Always better to use smaller kernel size! These layers are from OpenAI
         # Learning Atari: An Exploration of the A3C Reinforcement
@@ -160,7 +166,9 @@ class NECAgent:
         self.total_loss = tf.square(self.td_err, name="total_loss")
 
         # Optimizer
-        self.optimizer = tf.train.AdamOptimizer(self.adam_learning_rate).minimize(self.total_loss)
+        # self.optimizer = tf.train.AdamOptimizer(self.adam_learning_rate).minimize(self.total_loss)
+        self.optimizer = tf.contrib.opt.LazyAdamOptimizer(self.adam_learning_rate).minimize(self.total_loss)
+        # self.optimizer = tf.train.GradientDescentOptimizer(self.adam_learning_rate).minimize(self.total_loss)
 
         # ----------- AUXILIARY ----------- #
         # ----------- TF related ----------- #
@@ -196,8 +204,7 @@ class NECAgent:
         self._epsilon_decay_rate = (1 - 0.001) / (self.epsilon_decay_bounds[1] - self.epsilon_decay_bounds[0])
 
         # Majd kibasszuk innen
-        # self.__options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-        # self.__run_metadata = tf.RunMetadata()
+        self.__options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
 
     # This is the main function which we call in different environments during playing
     def get_action(self, processed_observation):
@@ -311,6 +318,38 @@ class NECAgent:
         #self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
         return agent_input
 
+    def _optimize(self):
+        self.__run_metadata = tf.RunMetadata()
+
+        # Get the batches from replay memory and run optimizer
+        state_batch, action_batch, q_n_batch = self.replay_memory.get_batch(self.batch_size)
+        action_batch_indices = [self.action_vector.index(a) for a in action_batch]
+        search_keys = self.session.run(self.state_embedding,
+                                       feed_dict={self.state: state_batch})
+        batch_indices = self._search_ann(search_keys, 0)
+        batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer],
+                                               feed_dict={self.state: state_batch,
+                                                          self.ann_search_indices: batch_indices,
+                                                          self.action_index: action_batch_indices,
+                                                          self.target_q: q_n_batch},
+                                               options=self.__options, run_metadata=self.__run_metadata)
+
+        self.summary_writer.add_run_metadata(self.__run_metadata, "run_data" + str(self.global_step))
+        self.summary_writer.flush()
+
+        # Mean of the total loss for Tensorboard visualization
+        if self.log_save_directory:
+            self._tensorboard_summary_writer(batch_total_loss)
+
+        log.debug("Optimizer has been run.")
+
+        fetched_timeline = timeline.Timeline(self.__run_metadata.step_stats)
+        chrome_trace = fetched_timeline.generate_chrome_trace_format()
+        file = "/home/atoth/temp/lazy_adamopt_dnd_120k_" + str(self.global_step) + ".json"
+        with open(file, "w") as f:
+            f.write(chrome_trace)
+            print("bugyi")
+
     def _get_action(self, agent_input):
         # Choose the random action
         if np.random.random_sample() < self.curr_epsilon():
@@ -328,33 +367,6 @@ class NECAgent:
             log.debug("Chosen action: {}".format(action))
 
         return action
-
-    def _optimize(self):
-        # Get the batches from replay memory and run optimizer
-        state_batch, action_batch, q_n_batch = self.replay_memory.get_batch(self.batch_size)
-        action_batch_indices = [self.action_vector.index(a) for a in action_batch]
-        search_keys = self.session.run(self.state_embedding,
-                                       feed_dict={self.state: state_batch})
-        batch_indices = self._search_ann(search_keys, 0)
-        batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer],
-                                               feed_dict={self.state: state_batch,
-                                                          self.ann_search_indices: batch_indices,
-                                                          self.action_index: action_batch_indices,
-                                                          self.target_q: q_n_batch})
-                                               # options=self.__options, run_metadata=self.__run_metadata)
-
-        # Mean of the total loss for Tensorboard visualization
-        if self.log_save_directory:
-            self._tensorboard_summary_writer(batch_total_loss)
-
-        log.debug("Optimizer has been run.")
-
-        # fetched_timeline = timeline.Timeline(self.__run_metadata.step_stats)
-        # chrome_trace = fetched_timeline.generate_chrome_trace_format()
-        # file = "/home/david/projects/temp/kaki.json"
-        # with open(file, "w") as f:
-        #     f.write(chrome_trace)
-        #     print("bugyi")
 
     def _tensorboard_summary_writer(self, batch_total_loss):
         # if self.global_step == self.optimization_start:
