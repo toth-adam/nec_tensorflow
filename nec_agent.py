@@ -1,7 +1,7 @@
 import logging
 import sys
 import os
-from collections import deque
+from collections import deque, OrderedDict
 
 import numpy as np
 from scipy.signal import lfilter
@@ -93,6 +93,15 @@ class NECAgent:
 
         # ----------- TENSORFLOW GRAPH BUILDING ----------- #
 
+        self.dnd_placeholder_ops = OrderedDict()
+        self.dnd_key_gather_ops = OrderedDict()
+        self.dnd_value_gather_ops = OrderedDict()
+        self.dnd_scatter_update_placeholder_ops = OrderedDict()
+        self.dnd_scatter_update_key_ops = OrderedDict()
+        self.dnd_scatter_update_value_ops = OrderedDict()
+        self.dnd_value_update_placeholder_ops = OrderedDict()
+        self.dnd_key_ops, self.dnd_value_ops = OrderedDict(), OrderedDict()
+
         self.state = tf.placeholder(shape=[None, *self._input_shape], dtype=tf.float32, name="state")
 
         # TF Variables representing the Differentiable Neural Dictionary (DND)
@@ -102,11 +111,11 @@ class NECAgent:
         # self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, 1]),
         #                               name="DND_values")
 
-        self.dnd_keys = tf.get_variable("DND_keys",
-                                        [self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron],
-                                        initializer=tf.zeros_initializer)
-        self.dnd_values = tf.get_variable("DND_values", [self.number_of_actions, self.dnd_max_memory, 1],
-                                          initializer=tf.zeros_initializer)
+        # self.dnd_keys = tf.get_variable("DND_keys",
+        #                                 [self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron],
+        #                                 initializer=tf.zeros_initializer)
+        # self.dnd_values = tf.get_variable("DND_values", [self.number_of_actions, self.dnd_max_memory, 1],
+        #                                   initializer=tf.zeros_initializer)
 
         # Always better to use smaller kernel size! These layers are from OpenAI
         # Learning Atari: An Exploration of the A3C Reinforcement
@@ -118,13 +127,13 @@ class NECAgent:
                                                     self.fully_connected_neuron, activation_fn=tf.nn.elu)
 
         # DND write operations
-        self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
-
-        self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, self.state_embedding)
-
-        self.dnd_value_update = tf.placeholder(tf.float32, None, name="dnd_value_update")
-
-        self.dnd_value_write = tf.scatter_nd_update(self.dnd_values, self.dnd_write_index, self.dnd_value_update)
+        # self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
+#
+        # self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, self.state_embedding)
+#
+        # self.dnd_value_update = tf.placeholder(tf.float32, None, name="dnd_value_update")
+#
+        # self.dnd_value_write = tf.scatter_nd_update(self.dnd_values, self.dnd_write_index, self.dnd_value_update)
 
         # This placeholder is used to decide whether modify LRU order in the DND or not (We modify the order during
         # action selection for new frames; we do not modify the order if we run the optimizer.)
@@ -132,11 +141,19 @@ class NECAgent:
         # Custom function to handle Approximate Nearest Neighbor search
         # self.ann_search = tf.py_func(self._search_ann, [self.state_embedding, self.is_update_LRU_order],
         #                              tf.int32, name="ann_search")
-        self.ann_search_indices = tf.placeholder(tf.int32, None, name="ann_search_indices")
+        # self.ann_search_indices = tf.placeholder(tf.int32, None, name="ann_search_indices")
+
+        self._create_dnd_variables()
+
+        self._create_scatter_update_ops()
+
+        self._create_gather_ops()
+
+        self.nn_state_embeddings, self.nn_state_values = self._create_stacked_gather()
 
         # Gather operations to select from DND (according to ann search outputs)
-        self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search_indices, name="nn_state_embeddings")
-        self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search_indices, name="nn_state_values")
+        # self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search_indices, name="nn_state_embeddings")
+        # self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search_indices, name="nn_state_values")
 
         # DND calculation
         # expand_dims() is needed to subtract the key(s) (state_embedding) from neighboring keys (Eq. 5)
@@ -327,11 +344,10 @@ class NECAgent:
         search_keys = self.session.run(self.state_embedding,
                                        feed_dict={self.state: state_batch})
         batch_indices = self._search_ann(search_keys, 0)
+        feed_dict = {self.state: state_batch, self.action_index: action_batch_indices, self.target_q: q_n_batch}
+        feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
         batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer],
-                                               feed_dict={self.state: state_batch,
-                                                          self.ann_search_indices: batch_indices,
-                                                          self.action_index: action_batch_indices,
-                                                          self.target_q: q_n_batch},
+                                               feed_dict=feed_dict,
                                                options=self.__options, run_metadata=self.__run_metadata)
 
         self.summary_writer.add_run_metadata(self.__run_metadata, "run_data" + str(self.global_step))
@@ -345,7 +361,7 @@ class NECAgent:
 
         fetched_timeline = timeline.Timeline(self.__run_metadata.step_stats)
         chrome_trace = fetched_timeline.generate_chrome_trace_format()
-        file = "/home/atoth/temp/lazy_adamopt_dnd_120k_" + str(self.global_step) + ".json"
+        file = "/home/atoth/temp/lazy_adamopt_new_gather" + str(self.global_step) + ".json"
         with open(file, "w") as f:
             f.write(chrome_trace)
             print("bugyi")
@@ -360,8 +376,9 @@ class NECAgent:
             search_keys = self.session.run(self.state_embedding,
                                            feed_dict={self.state: np.expand_dims(agent_input, axis=0)})
             batch_indices = self._search_ann(search_keys, 1)
-            max_q = self.session.run(self.predicted_q, feed_dict={self.state: np.expand_dims(agent_input, axis=0),
-                                                                  self.ann_search_indices: batch_indices})
+            feed_dict = {self.state: np.expand_dims(agent_input, axis=0)}
+            feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
+            max_q = self.session.run(self.predicted_q, feed_dict=feed_dict)
             log.debug("Max. Q value: {}".format(max_q[0]))
             action = self.action_vector[max_q[0]]
             log.debug("Chosen action: {}".format(action))
@@ -409,9 +426,10 @@ class NECAgent:
         search_keys = self.session.run(self.state_embedding,
                                        feed_dict={self.state: state})
         batch_indices = self._search_ann(search_keys, 0)
+        feed_dict = {self.state: state}
+        feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
         bootstrap_value = np.amax(self.session.run(self.pred_q_values,
-                                                   feed_dict={self.state: state,
-                                                              self.ann_search_indices: batch_indices}))
+                                                   feed_dict=feed_dict))
         disc_bootstrap_value = self.discount_factor ** self.n_step_horizon * bootstrap_value
         q_value = discounted_reward + disc_bootstrap_value
 
@@ -434,22 +452,22 @@ class NECAgent:
             indices = ann.query(search_keys)
             log.debug("ANN indices for action {}: {}".format(act, indices))
             # Create numpy array with full of corresponding action vector index
-            action_indices = np.full(indices.shape, self.action_vector.index(act))
-            log.debug("Action indices for action {}: {}".format(act, action_indices))
+            # action_indices = np.full(indices.shape, self.action_vector.index(act))
+            # log.debug("Action indices for action {}: {}".format(act, action_indices))
             # Riffle two arrays
-            tf_indices = self._riffle_arrays(action_indices, indices)
-            batch_indices.append(tf_indices)
+            # tf_indices = self._riffle_arrays(action_indices, indices)
+            batch_indices.append(indices)
             # Very important part: Modify LRU Order here
             # Doesn't work without tabular update of course!
             if update_LRU_order == 1:
                 _ = [self.tf_index__state_hash[act][i] for i in indices.ravel()]
-        np_batch = np.asarray(batch_indices)
+        np_batch = np.asarray(batch_indices, dtype=np.int32)
         log.debug("Batch update indices: {}".format(np_batch))
 
         # Reshaping to gather_nd compatible format
-        final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])], dtype=np.int32)
+        # final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])], dtype=np.int32)
 
-        return final_indices
+        return np_batch
 
     def _tabular_like_update(self, states, state_hashes, actions, q_ns):
         log.debug("Tabular like update has been started.")
@@ -469,11 +487,15 @@ class NECAgent:
                 self.seen_states_number += 1
 
         in_cond_vector = dnd_gather_indices != None
-        indices = np.squeeze(self._riffle_arrays(action_indices[in_cond_vector], dnd_gather_indices[in_cond_vector]),
-                             axis=0)
+        # indices = np.squeeze(self._riffle_arrays(action_indices[in_cond_vector], dnd_gather_indices[in_cond_vector]),
+        #                      axis=0)
+        indices = self._batches_by_action(action_indices[in_cond_vector], dnd_gather_indices[in_cond_vector])
 
-        dnd_q_vals = self.session.run(self.nn_state_values, feed_dict={self.ann_search_indices: indices})
+        feed_dict = {o: k for o, k in zip(self.dnd_placeholder_ops.values(), indices)}
+
+        dnd_q_vals = self.session.run(list(self.dnd_value_gather_ops.values()), feed_dict=feed_dict)
         dnd_q_vals = np.squeeze(dnd_q_vals, axis=1)
+        dnd_q_vals = [dnd_q_vals[a].popleft() for a in action_indices[in_cond_vector]]
         dnd_q_values[in_cond_vector] = dnd_q_vals
 
         local_sh_dict = {a: {} for a in self.action_vector}
@@ -536,14 +558,23 @@ class NECAgent:
         batch_cond_vector = np.asarray(batch_cond_vector, dtype=np.bool)
 
         # Create batch indices and update values for TensorFlow session
-        batch_indices = np.squeeze(self._riffle_arrays(action_indices[batch_valid_indices], batch_indices))
-        batch_update_values = np.expand_dims(batch_update_values, axis=1)
+        # batch_indices = np.squeeze(self._riffle_arrays(action_indices[batch_valid_indices], batch_indices))
+        batch_states_mod = self._batches_by_action(action_indices[batch_valid_indices], batch_states, False)
+        batch_indices = self._batches_by_action(action_indices[batch_valid_indices], batch_indices, False)
+        batch_update_values = self._batches_by_action(action_indices[batch_valid_indices],
+                                                      np.expand_dims(batch_update_values, axis=1), False)
 
         # Batch tabular update
-        state_embeddings, _, _ = self.session.run([self.state_embedding, self.dnd_value_write, self.dnd_key_write],
-                                                  feed_dict={self.state: batch_states,
-                                                  self.dnd_value_update: batch_update_values,
-                                                  self.dnd_write_index: batch_indices})
+        scatter_update_key_ops = list(self.dnd_scatter_update_key_ops.values())
+        scatter_update_value_ops = list(self.dnd_scatter_update_value_ops.values())
+        scatter_update_ph_ops = list(self.dnd_scatter_update_placeholder_ops.values())
+        scatter_update_value_ph_ops = list(self.dnd_value_update_placeholder_ops.values())
+        for i, (b_s, b_i, b_u) in enumerate(zip(batch_states_mod, batch_indices, batch_update_values)):
+            ops = [self.state_embedding, scatter_update_key_ops[i], scatter_update_value_ops[i]]
+            feed_dict = {self.state: b_s, scatter_update_ph_ops[i]: b_i, scatter_update_value_ph_ops[i]: b_u}
+            self.session.run(ops, feed_dict=feed_dict)
+
+        state_embeddings = self.session.run(self.state_embedding, feed_dict={self.state: batch_states})
 
         log.debug("Tabular like update has been run.")
 
@@ -561,7 +592,7 @@ class NECAgent:
 
         # FLANN index rebuild, if index_rebuild = True
         if index_rebuild:
-            dnd_keys = self.session.run(self.dnd_keys)
+            dnd_keys = self.session.run(list(self.dnd_key_ops.values()))
             for act, ann in self.anns.items():
                 action_index = self.action_vector.index(act)
                 # Ez a jó (kövi sor)
@@ -606,6 +637,46 @@ class NECAgent:
             inputs.append(layer)
         return conv_layers
 
+    def _create_dnd_variables(self):
+        for i, a in enumerate(self.action_vector):
+            with tf.variable_scope("dnd_keys"):
+                k = tf.get_variable("dnd_action_" + str(i), (self.dnd_max_memory, self.fully_connected_neuron),
+                                    dtype=tf.float32, initializer=tf.zeros_initializer)
+
+            with tf.variable_scope("dnd_values"):
+                v = tf.get_variable("dnd_action_" + str(i), (self.dnd_max_memory, 1),
+                                    dtype=tf.float32, initializer=tf.zeros_initializer)
+            self.dnd_key_ops[a] = k
+            self.dnd_value_ops[a] = v
+
+    def _create_gather_ops(self):
+        for a, k in self.dnd_key_ops.items():
+            self.dnd_placeholder_ops[a] = tf.placeholder(tf.int32, None)
+            with tf.variable_scope("dnd_key_gather_ops"):
+                self.dnd_key_gather_ops[a] = tf.gather(k, self.dnd_placeholder_ops[a], axis=0)
+        for a, v in self.dnd_value_ops.items():
+            with tf.variable_scope("dnd_value_gather_ops"):
+                self.dnd_value_gather_ops[a] = tf.gather(v, self.dnd_placeholder_ops[a], axis=0)
+
+    def _create_stacked_gather(self):
+        key_gather_ops = [op for op in self.dnd_key_gather_ops.values()]
+        value_gather_ops = [op for op in self.dnd_value_gather_ops.values()]
+        nn_state_embeddings = tf.stack(key_gather_ops, axis=0, name="nn_state_embeddings")
+        nn_state_values = tf.stack(value_gather_ops, axis=0, name="nn_state_values")
+        return nn_state_embeddings, nn_state_values
+
+    def _create_scatter_update_ops(self):
+        for a in self.action_vector:
+            with tf.variable_scope("dnd_scatter_update"):
+                self.dnd_scatter_update_placeholder_ops[a] = tf.placeholder(tf.int32, None)
+                self.dnd_value_update_placeholder_ops[a] = tf.placeholder(tf.float32, None)
+                self.dnd_scatter_update_key_ops[a] = tf.scatter_nd_update(self.dnd_key_ops[a],
+                                                                          self.dnd_scatter_update_placeholder_ops[a],
+                                                                          self.state_embedding)
+                self.dnd_scatter_update_value_ops[a] = tf.scatter_nd_update(self.dnd_value_ops[a],
+                                                                            self.dnd_scatter_update_placeholder_ops[a],
+                                                                            self.dnd_value_update_placeholder_ops[a])
+
     @staticmethod
     def _riffle_arrays(array_1, array_2):
         if len(array_1.shape) == 1:
@@ -617,6 +688,15 @@ class NECAgent:
         tf_indices[:, 0::2] = array_1
         tf_indices[:, 1::2] = array_2
         return tf_indices.reshape((array_1.shape[0], array_1.shape[1], 2))
+
+    def _batches_by_action(self, array_1, array_2, use_deque=True):
+        indices = [deque() for _ in self.action_vector]
+        for a, i in zip(array_1, array_2):
+            indices[a].append(i)
+        if use_deque:
+            return indices
+        else:
+            return [np.asarray(array) for array in indices]
 
     def _initial_frame_stacking(self, processed_obs):
         return np.stack((processed_obs, ) * self.frame_stacking_number, axis=2)
