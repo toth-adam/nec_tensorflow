@@ -336,7 +336,7 @@ class NECAgent:
         return agent_input
 
     def _optimize(self):
-        self.__run_metadata = tf.RunMetadata()
+        # self.__run_metadata = tf.RunMetadata()
 
         # Get the batches from replay memory and run optimizer
         state_batch, action_batch, q_n_batch = self.replay_memory.get_batch(self.batch_size)
@@ -347,11 +347,11 @@ class NECAgent:
         feed_dict = {self.state: state_batch, self.action_index: action_batch_indices, self.target_q: q_n_batch}
         feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
         batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer],
-                                               feed_dict=feed_dict,
-                                               options=self.__options, run_metadata=self.__run_metadata)
+                                               feed_dict=feed_dict,)
+                                               # options=self.__options, run_metadata=self.__run_metadata)
 
-        self.summary_writer.add_run_metadata(self.__run_metadata, "run_data" + str(self.global_step))
-        self.summary_writer.flush()
+        # self.summary_writer.add_run_metadata(self.__run_metadata, "run_data" + str(self.global_step))
+        # self.summary_writer.flush()
 
         # Mean of the total loss for Tensorboard visualization
         if self.log_save_directory:
@@ -359,12 +359,12 @@ class NECAgent:
 
         log.debug("Optimizer has been run.")
 
-        fetched_timeline = timeline.Timeline(self.__run_metadata.step_stats)
-        chrome_trace = fetched_timeline.generate_chrome_trace_format()
-        file = "/home/atoth/temp/lazy_adamopt_new_gather" + str(self.global_step) + ".json"
-        with open(file, "w") as f:
-            f.write(chrome_trace)
-            print("bugyi")
+        # fetched_timeline = timeline.Timeline(self.__run_metadata.step_stats)
+        # chrome_trace = fetched_timeline.generate_chrome_trace_format()
+        # file = "C:/Work/temp/nec_agent_2017_11_20/lazy_adamopt_new_gather" + str(self.global_step) + ".json"
+        # with open(file, "w") as f:
+        #     f.write(chrome_trace)
+        #     print("bugyi")
 
     def _get_action(self, agent_input):
         # Choose the random action
@@ -478,7 +478,7 @@ class NECAgent:
 
         action_indices = np.asarray([self.action_vector.index(act) for act in actions])
 
-        dnd_q_values = np.empty(q_ns.shape, dtype=np.float32)
+        dnd_q_values = np.zeros(q_ns.shape, dtype=np.float32)
         dnd_gather_indices = np.asarray([self.state_hash__tf_index[a][sh] if sh in self.state_hash__tf_index[a]
                                          else None for sh, a in zip(state_hashes, actions)])
         # TÖRÖLNI
@@ -494,8 +494,8 @@ class NECAgent:
         feed_dict = {o: k for o, k in zip(self.dnd_placeholder_ops.values(), indices)}
 
         dnd_q_vals = self.session.run(list(self.dnd_value_gather_ops.values()), feed_dict=feed_dict)
-        dnd_q_vals = np.squeeze(dnd_q_vals, axis=1)
-        dnd_q_vals = [dnd_q_vals[a].popleft() for a in action_indices[in_cond_vector]]
+        dnd_q_vals2 = [deque(np.squeeze(d, axis=1)) for d in dnd_q_vals]
+        dnd_q_vals = [dnd_q_vals2[a].popleft() for a in action_indices[in_cond_vector]]
         dnd_q_values[in_cond_vector] = dnd_q_vals
 
         local_sh_dict = {a: {} for a in self.action_vector}
@@ -661,8 +661,8 @@ class NECAgent:
     def _create_stacked_gather(self):
         key_gather_ops = [op for op in self.dnd_key_gather_ops.values()]
         value_gather_ops = [op for op in self.dnd_value_gather_ops.values()]
-        nn_state_embeddings = tf.stack(key_gather_ops, axis=0, name="nn_state_embeddings")
-        nn_state_values = tf.stack(value_gather_ops, axis=0, name="nn_state_values")
+        nn_state_embeddings = tf.stack(key_gather_ops, axis=1, name="nn_state_embeddings")
+        nn_state_values = tf.stack(value_gather_ops, axis=1, name="nn_state_values")
         return nn_state_embeddings, nn_state_values
 
     def _create_scatter_update_ops(self):
