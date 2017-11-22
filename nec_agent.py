@@ -88,8 +88,10 @@ class NECAgent:
         self.episode_step = 0
         self.episode_number = 0
 
-        # For logging the total loss
+        # For logging the total loss and windowed average episode reward
         self.create_list_for_total_losses = True
+        self.episode_total_reward = 0
+        self.windowed_average_total_reward = deque(maxlen=5)
 
         # ----------- TENSORFLOW GRAPH BUILDING ----------- #
 
@@ -271,6 +273,12 @@ class NECAgent:
         self._ann_index_update(actions, batch_valid_indices, batch_indices_for_ann, state_embeddings, batch_cond_vector,
                                dnd_lengths)
 
+        # Add average episode total reward to its deque
+        self.windowed_average_total_reward.append(self.episode_total_reward)
+        self._tensorboard_reward_writer()
+
+        self.reset_episode_related_containers()
+
     def reset_episode_related_containers(self):
         self._observation_list = []
         self._agent_input_list = []
@@ -281,11 +289,15 @@ class NECAgent:
         self.episode_step = 0
         # Increment episode number
         self.episode_number += 1
+        # Set episode total reward to 0
+        self.episode_total_reward = 0
 
     def save_action_and_reward(self, a, r):
         # Convert action to float here just for checking purposes. _check_list_ids()
         self._agent_action_list.append(float(a))
         self._rewards_deque.append(r)
+        # Add step reward to episode total reward
+        self.episode_total_reward += r
 
     def agent_save(self, path):
         self.saver.save(self.session, path + '/model_' + str(self.global_step) + '.cptk')
@@ -332,7 +344,7 @@ class NECAgent:
         self._observation_list.append(processed_observation)
         self._agent_input_list.append(agent_input)
         self._agent_input_hashes_list.append(hash128(agent_input))
-        #self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
+        # self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
         return agent_input
 
     def _optimize(self):
@@ -347,7 +359,7 @@ class NECAgent:
         feed_dict = {self.state: state_batch, self.action_index: action_batch_indices, self.target_q: q_n_batch}
         feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
         batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer],
-                                               feed_dict=feed_dict,)
+                                               feed_dict=feed_dict)
                                                # options=self.__options, run_metadata=self.__run_metadata)
 
         # self.summary_writer.add_run_metadata(self.__run_metadata, "run_data" + str(self.global_step))
@@ -355,13 +367,13 @@ class NECAgent:
 
         # Mean of the total loss for Tensorboard visualization
         if self.log_save_directory:
-            self._tensorboard_summary_writer(batch_total_loss)
+            self._tensorboard_loss_writer(batch_total_loss)
 
-        log.debug("Optimizer has been run.")
+        # log.debug("Optimizer has been run.")
 
         # fetched_timeline = timeline.Timeline(self.__run_metadata.step_stats)
         # chrome_trace = fetched_timeline.generate_chrome_trace_format()
-        # file = "C:/Work/temp/nec_agent_2017_11_20/lazy_adamopt_new_gather" + str(self.global_step) + ".json"
+        # file = "/home/atoth/temp/lazy_adamopt_new_gather" + str(self.global_step) + ".json"
         # with open(file, "w") as f:
         #     f.write(chrome_trace)
         #     print("bugyi")
@@ -385,7 +397,7 @@ class NECAgent:
 
         return action
 
-    def _tensorboard_summary_writer(self, batch_total_loss):
+    def _tensorboard_loss_writer(self, batch_total_loss):
         # if self.global_step == self.optimization_start:
         if self.create_list_for_total_losses:
             self.create_list_for_total_losses = False
@@ -402,6 +414,13 @@ class NECAgent:
             self.summary_writer.flush()
             self._loss_list = []
             self._mean_size = 0
+
+    def _tensorboard_reward_writer(self):
+        average_windowd_episode_reward = np.mean(self.windowed_average_total_reward)
+        summary = tf.Summary()
+        summary.value.add(tag='Average episode reward', simple_value=float(average_windowd_episode_reward))
+        self.summary_writer.add_summary(summary, self.global_step)
+        self.summary_writer.flush()
 
     def _add_to_replay_memory(self, q, episode_end=False):
         s = self._observation_list[self.episode_step - self.n_step_horizon]
