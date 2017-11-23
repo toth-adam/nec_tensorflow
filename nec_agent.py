@@ -642,25 +642,27 @@ class NECAgent:
         return conv_layers
 
     def _create_dnd_variables(self):
-        for i, a in enumerate(self.action_vector):
-            with tf.variable_scope("dnd_keys"):
-                k = tf.get_variable("dnd_action_" + str(i), (self.dnd_max_memory, self.fully_connected_neuron),
+        with tf.variable_scope("dnd_keys"):
+            for a in self.action_vector:
+                k = tf.get_variable("dnd_keys_for_action_" + str(a), (self.dnd_max_memory, self.fully_connected_neuron),
                                     dtype=tf.float32, initializer=tf.zeros_initializer)
+                self.dnd_key_ops[a] = k
 
-            with tf.variable_scope("dnd_values"):
-                v = tf.get_variable("dnd_action_" + str(i), (self.dnd_max_memory, 1),
+        with tf.variable_scope("dnd_values"):
+            for a in self.action_vector:
+                v = tf.get_variable("dnd_values_for_action_" + str(a), (self.dnd_max_memory, 1),
                                     dtype=tf.float32, initializer=tf.zeros_initializer)
-            self.dnd_key_ops[a] = k
-            self.dnd_value_ops[a] = v
+                self.dnd_value_ops[a] = v
 
     def _create_gather_ops(self):
-        for a, k in self.dnd_key_ops.items():
-            self.dnd_placeholder_ops[a] = tf.placeholder(tf.int32, None)
-            with tf.variable_scope("dnd_key_gather_ops"):
-                self.dnd_key_gather_ops[a] = tf.gather(k, self.dnd_placeholder_ops[a], axis=0)
-        for a, v in self.dnd_value_ops.items():
-            with tf.variable_scope("dnd_value_gather_ops"):
-                self.dnd_value_gather_ops[a] = tf.gather(v, self.dnd_placeholder_ops[a], axis=0)
+        with tf.variable_scope("dnd_gather_ops"):
+            for a, k in self.dnd_key_ops.items():
+                self.dnd_placeholder_ops[a] = tf.placeholder(tf.int32, None, name="gather_ph_for_action_" + str(a))
+                self.dnd_key_gather_ops[a] = tf.gather(k, self.dnd_placeholder_ops[a], axis=0,
+                                                       name="key_gather_op_for_action_" + str(a))
+            for a, v in self.dnd_value_ops.items():
+                self.dnd_value_gather_ops[a] = tf.gather(v, self.dnd_placeholder_ops[a], axis=0,
+                                                         name="val_gather_op_for_action_" + str(a))
 
     def _create_stacked_gather(self):
         key_gather_ops = [op for op in self.dnd_key_gather_ops.values()]
@@ -670,16 +672,20 @@ class NECAgent:
         return nn_state_embeddings, nn_state_values
 
     def _create_scatter_update_ops(self):
-        for a in self.action_vector:
-            with tf.variable_scope("dnd_scatter_update"):
-                self.dnd_scatter_update_placeholder_ops[a] = tf.placeholder(tf.int32, None)
-                self.dnd_value_update_placeholder_ops[a] = tf.placeholder(tf.float32, None)
+        with tf.variable_scope("dnd_scatter_update"):
+            for a in self.action_vector:
+                self.dnd_scatter_update_placeholder_ops[a] = tf.placeholder(tf.int32, None,
+                                                                            name="update_ind_ph_for_action_" + str(a))
+                self.dnd_value_update_placeholder_ops[a] = tf.placeholder(tf.float32, None,
+                                                                          name="val_update_ph_for_action_" + str(a))
                 self.dnd_scatter_update_key_ops[a] = tf.scatter_nd_update(self.dnd_key_ops[a],
                                                                           self.dnd_scatter_update_placeholder_ops[a],
-                                                                          self.state_embedding)
+                                                                          self.state_embedding,
+                                                                          name="key_update_op_for_action_" + str(a))
                 self.dnd_scatter_update_value_ops[a] = tf.scatter_nd_update(self.dnd_value_ops[a],
                                                                             self.dnd_scatter_update_placeholder_ops[a],
-                                                                            self.dnd_value_update_placeholder_ops[a])
+                                                                            self.dnd_value_update_placeholder_ops[a],
+                                                                            name="val_update_op_for_action_" + str(a))
 
     @staticmethod
     def _riffle_arrays(array_1, array_2):
