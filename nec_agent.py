@@ -1,6 +1,7 @@
 import logging
 import sys
 import os
+import argparse
 from collections import deque, OrderedDict
 
 import numpy as np
@@ -8,7 +9,7 @@ from scipy.signal import lfilter
 
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
-from tensorflow.python.client import timeline
+# from tensorflow.python.client import timeline
 
 from lru import LRU
 from pyflann import FLANN
@@ -18,8 +19,13 @@ from replay_memory import ReplayMemory
 
 
 log = logging.getLogger(__name__)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-# os.environ["LD_LIBRARY_PATH"] += os.pathsep +
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--gpu_id", help="The id of GPU (default 0)")
+
+args = vars(parser.parse_args())
+
+os.environ["CUDA_VISIBLE_DEVICES"] = args["gpu_id"] if args["gpu_id"] else "0"
 
 
 class NECAgent:
@@ -81,7 +87,7 @@ class NECAgent:
         self.state_hash__tf_index = {k: {} for k in action_vector}
 
         # Tensorflow Session object
-        self.session = self._create_tf_session(self._cpu_only)
+        self.session = self._create_tf_session()
 
         # Step numbers
         self.global_step = 0
@@ -104,100 +110,78 @@ class NECAgent:
         self.dnd_value_update_placeholder_ops = OrderedDict()
         self.dnd_key_ops, self.dnd_value_ops = OrderedDict(), OrderedDict()
 
-        self.state = tf.placeholder(shape=[None, *self._input_shape], dtype=tf.float32, name="state")
+        if self._cpu_only:
+            device = "/cpu:0"
+        elif args["gpu_id"]:
+            device = "/device:GPU:" + str(args["gpu_id"])
+        else:
+            device = "/device:GPU:0"
 
-        # TF Variables representing the Differentiable Neural Dictionary (DND)
-        # self.dnd_keys = tf.Variable(
-        #     tf.random_normal([self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron]),
-        #     name="DND_keys")
-        # self.dnd_values = tf.Variable(tf.random_normal([self.number_of_actions, self.dnd_max_memory, 1]),
-        #                               name="DND_values")
+        with tf.device(device):
+            self.state = tf.placeholder(shape=[None, *self._input_shape], dtype=tf.float32, name="state")
 
-        # self.dnd_keys = tf.get_variable("DND_keys",
-        #                                 [self.number_of_actions, self.dnd_max_memory, self.fully_connected_neuron],
-        #                                 initializer=tf.zeros_initializer)
-        # self.dnd_values = tf.get_variable("DND_values", [self.number_of_actions, self.dnd_max_memory, 1],
-        #                                   initializer=tf.zeros_initializer)
+            # Always better to use smaller kernel size! These layers are from OpenAI
+            # Learning Atari: An Exploration of the A3C Reinforcement
+            # TODO: USE 1x1 kernels-bottleneck, CS231n Winter 2016: Lecture 11 from 29 minutes
+            self.convolutional_layers = self._create_conv_layers()
 
-        # Always better to use smaller kernel size! These layers are from OpenAI
-        # Learning Atari: An Exploration of the A3C Reinforcement
-        # TODO: USE 1x1 kernels-bottleneck, CS231n Winter 2016: Lecture 11 from 29 minutes
-        self.convolutional_layers = self._create_conv_layers()
+            # This is the final fully connected layer
+            self.state_embedding = slim.fully_connected(slim.flatten(self.convolutional_layers[-1]),
+                                                        self.fully_connected_neuron, activation_fn=tf.nn.elu)
 
-        # This is the final fully connected layer
-        self.state_embedding = slim.fully_connected(slim.flatten(self.convolutional_layers[-1]),
-                                                    self.fully_connected_neuron, activation_fn=tf.nn.elu)
+            self._create_dnd_variables()
 
-        # DND write operations
-        # self.dnd_write_index = tf.placeholder(tf.int32, None, name="dnd_write_index")
-#
-        # self.dnd_key_write = tf.scatter_nd_update(self.dnd_keys, self.dnd_write_index, self.state_embedding)
-#
-        # self.dnd_value_update = tf.placeholder(tf.float32, None, name="dnd_value_update")
-#
-        # self.dnd_value_write = tf.scatter_nd_update(self.dnd_values, self.dnd_write_index, self.dnd_value_update)
+            self._create_scatter_update_ops()
 
-        # This placeholder is used to decide whether modify LRU order in the DND or not (We modify the order during
-        # action selection for new frames; we do not modify the order if we run the optimizer.)
-        # self.is_update_LRU_order = tf.placeholder(tf.int32, None, name="is_LRU_order_update")
-        # Custom function to handle Approximate Nearest Neighbor search
-        # self.ann_search = tf.py_func(self._search_ann, [self.state_embedding, self.is_update_LRU_order],
-        #                              tf.int32, name="ann_search")
-        # self.ann_search_indices = tf.placeholder(tf.int32, None, name="ann_search_indices")
+            self._create_gather_ops()
 
-        self._create_dnd_variables()
+            self.nn_state_embeddings, self.nn_state_values = self._create_stacked_gather()
 
-        self._create_scatter_update_ops()
+            # DND calculation
+            # expand_dims() is needed to subtract the key(s) (state_embedding) from neighboring keys (Eq. 5)
+            self.expand_dims = tf.expand_dims(tf.expand_dims(self.state_embedding, axis=1), axis=1)
+            self.square_diff = tf.square(self.expand_dims - self.nn_state_embeddings)
 
-        self._create_gather_ops()
+            # We clip the values here, because the 0 values cause problems during backward pass (NaNs)
+            self.distances = tf.sqrt(tf.clip_by_value(tf.reduce_sum(self.square_diff, axis=3),
+                                                      1e-12, 1e12)) + self.delta
+            self.weightings = 1.0 / self.distances
+            # Normalised weightings (Eq. 2)
+            self.normalised_weightings = self.weightings / tf.reduce_sum(self.weightings, axis=2, keep_dims=True)
+            # (Eq. 1)
+            self.squeeze = tf.squeeze(self.nn_state_values, axis=3)
+            self.pred_q_values = tf.reduce_sum(self.squeeze * self.normalised_weightings, axis=2,
+                                               name="predicted_Q_values")
+            self.predicted_q = tf.argmax(self.pred_q_values, axis=1, name="predicted_Q_arg")
 
-        self.nn_state_embeddings, self.nn_state_values = self._create_stacked_gather()
+        with tf.device("/cpu:0"):
+            # TODO: Check if action_index device placement is not a perf. problem (probably not)
+            # This has to be an iterable, e.g.: [1, 0, 0]
+            self.action_index = tf.placeholder(tf.int32, [None], name="action")
+            self.action_onehot = tf.one_hot(self.action_index, self.number_of_actions, axis=-1)
 
-        # Gather operations to select from DND (according to ann search outputs)
-        # self.nn_state_embeddings = tf.gather_nd(self.dnd_keys, self.ann_search_indices, name="nn_state_embeddings")
-        # self.nn_state_values = tf.gather_nd(self.dnd_values, self.ann_search_indices, name="nn_state_values")
-
-        # DND calculation
-        # expand_dims() is needed to subtract the key(s) (state_embedding) from neighboring keys (Eq. 5)
-        self.expand_dims = tf.expand_dims(tf.expand_dims(self.state_embedding, axis=1), axis=1)
-        self.square_diff = tf.square(self.expand_dims - self.nn_state_embeddings)
-
-        # We clip the values here, because the 0 values cause problems during backward pass (NaNs)
-        self.distances = tf.sqrt(tf.clip_by_value(tf.reduce_sum(self.square_diff, axis=3), 1e-12, 1e12)) + self.delta
-        self.weightings = 1.0 / self.distances
-        # Normalised weightings (Eq. 2)
-        self.normalised_weightings = self.weightings / tf.reduce_sum(self.weightings, axis=2, keep_dims=True)
-        # (Eq. 1)
-        self.squeeze = tf.squeeze(self.nn_state_values, axis=3)
-        self.pred_q_values = tf.reduce_sum(self.squeeze * self.normalised_weightings, axis=2,
-                                           name="predicted_Q_values")
-        self.predicted_q = tf.argmax(self.pred_q_values, axis=1, name="predicted_Q_arg")
-
-        # This has to be an iterable, e.g.: [1, 0, 0]
-        self.action_index = tf.placeholder(tf.int32, [None], name="action")
-        self.action_onehot = tf.one_hot(self.action_index, self.number_of_actions, axis=-1)
-
-        # Loss Function
-        self.target_q = tf.placeholder(tf.float32, [None], name="target_Q")
-        self.q_value = tf.reduce_sum(tf.multiply(self.pred_q_values, self.action_onehot), axis=1,
+        with tf.device(device):
+            # Loss Function
+            self.target_q = tf.placeholder(tf.float32, [None], name="target_Q")
+            self.q_value = tf.reduce_sum(tf.multiply(self.pred_q_values, self.action_onehot), axis=1,
                                      name="calculated_Q_value")
-        self.td_err = tf.subtract(self.target_q, self.q_value, name="td_error")
-        self.total_loss = tf.square(self.td_err, name="total_loss")
+            self.td_err = tf.subtract(self.target_q, self.q_value, name="td_error")
+            self.total_loss = tf.square(self.td_err, name="total_loss")
 
-        # Optimizer
-        # self.optimizer = tf.train.AdamOptimizer(self.adam_learning_rate).minimize(self.total_loss)
-        self.optimizer = tf.contrib.opt.LazyAdamOptimizer(self.adam_learning_rate).minimize(self.total_loss)
-        # self.optimizer = tf.train.GradientDescentOptimizer(self.adam_learning_rate).minimize(self.total_loss)
+            # Optimizer
+            self.optimizer = tf.contrib.opt.LazyAdamOptimizer(self.adam_learning_rate).minimize(self.total_loss)
 
         # ----------- AUXILIARY ----------- #
         # ----------- TF related ----------- #
 
         # Global initialization
-        self.init_op = tf.global_variables_initializer()
+        with tf.device(device):
+            self.init_op = tf.global_variables_initializer()
         self.session.run(self.init_op)
 
         # Check op for NaN checking - if needed
-        self.check_op = tf.add_check_numerics_ops()
+        # with tf.device(device):
+        #     self.check_op = tf.add_check_numerics_ops()
 
         # Saver op
         self.saver = tf.train.Saver(max_to_keep=5)
@@ -774,12 +758,9 @@ class NECAgent:
                                                                auf=self.ann_rebuild_freq, nn=self.neighbor_number))
 
     @staticmethod
-    def _create_tf_session(only_cpu):
-        if only_cpu:
-            config = tf.ConfigProto(device_count={"GPU": 0})
-            return tf.Session(config=config)
-        else:
-            return tf.Session()
+    def _create_tf_session():
+        # return tf.Session(config=tf.ConfigProto(log_device_placement=True))
+        return tf.Session()
 
     def _check_list_ids(self, s, a, q):
         def get_index(l, o):
