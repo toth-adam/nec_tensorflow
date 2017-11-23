@@ -475,7 +475,7 @@ class NECAgent:
             # log.debug("Action indices for action {}: {}".format(act, action_indices))
             # Riffle two arrays
             # tf_indices = self._riffle_arrays(action_indices, indices)
-            # batch_indices.append(indices)
+            batch_indices.append(indices)
             # Very important part: Modify LRU Order here
             # Doesn't work without tabular update of course!
             if update_LRU_order == 1:
@@ -589,7 +589,7 @@ class NECAgent:
         scatter_update_ph_ops = list(self.dnd_scatter_update_placeholder_ops.values())
         scatter_update_value_ph_ops = list(self.dnd_value_update_placeholder_ops.values())
         for i, (b_s, b_i, b_u) in enumerate(zip(batch_states_mod, batch_indices, batch_update_values)):
-            if b_s:
+            if len(b_s) > 0:
                 ops = [self.state_embedding, scatter_update_key_ops[i], scatter_update_value_ops[i]]
                 feed_dict = {self.state: b_s, scatter_update_ph_ops[i]: b_i, scatter_update_value_ph_ops[i]: b_u}
                 self.session.run(ops, feed_dict=feed_dict)

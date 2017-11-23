@@ -18,7 +18,7 @@ def image_preprocessor(state, size=(42, 42)):
 setup_logging()
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "C:/RL/nec_saves",
+    # "log_save_directory": "C:/RL/nec_saves",
     "dnd_max_memory": 100000,
     "input_shape": (42, 42, 3),
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
