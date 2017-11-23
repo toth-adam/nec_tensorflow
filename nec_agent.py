@@ -12,7 +12,7 @@ import tensorflow.contrib.slim as slim
 
 from lru import LRU
 from pyflann import FLANN
-# from mmh3 import hash128
+from mmh3 import hash128
 
 from replay_memory import ReplayMemory
 
@@ -215,6 +215,8 @@ class NECAgent:
         self._agent_action_list = []
         self._rewards_deque = deque()
         self._q_values_list = []
+        if self.tabular_update_for_neighbours:
+            self.tabular_neighbour_list = []
 
         # Logging and TF FileWriter
         self.log_save_directory = log_save_directory
@@ -292,6 +294,8 @@ class NECAgent:
         self._agent_action_list = []
         self._rewards_deque = deque()
         self._q_values_list = []
+        if self.tabular_update_for_neighbours:
+            self.tabular_neighbour_list = []
         self.episode_step = 0
         # Increment episode number
         self.episode_number += 1
@@ -349,8 +353,8 @@ class NECAgent:
         # Saving the relevant quantities
         self._observation_list.append(processed_observation)
         self._agent_input_list.append(agent_input)
-        # self._agent_input_hashes_list.append(hash128(agent_input))
-        self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
+        self._agent_input_hashes_list.append(hash128(agent_input))
+        # self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
         return agent_input
 
     def _optimize(self):
@@ -397,6 +401,7 @@ class NECAgent:
                 batch_indices, neighbour_distances = self._search_ann(search_keys, 1)
             else:
                 batch_indices = self._search_ann(search_keys, 1)
+
             feed_dict = {self.state: np.expand_dims(agent_input, axis=0)}
             feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
             max_q = self.session.run(self.predicted_q, feed_dict=feed_dict)
@@ -404,7 +409,24 @@ class NECAgent:
             action = self.action_vector[max_q[0]]
             log.debug("Chosen action: {}".format(action))
 
+            if self.tabular_update_for_neighbours:
+                self._add_to_tabular_neighbour(action, batch_indices, neighbour_distances)
+
         return action
+
+    def _add_to_tabular_neighbour(self, action, indices, distances):
+        action_index = self.action_vector.index(action)
+        action_vector = np.full(self.neighbor_number, action_index, dtype=np.int32)
+        indices_vector = np.asarray(np.ravel(indices[action_index]), dtype=np.int32)
+        distances_vector = np.ravel(distances[action_index])
+        cond_vector = []
+        for dis in distances_vector:
+            if dis < self.tab_update_for_neighbours_dist:
+                cond_vector.append(True)
+            else:
+                cond_vector.append(False)
+        self.tabular_neighbour_list.append([action_vector, indices_vector, distances_vector, cond_vector])
+
 
     def _tensorboard_loss_writer(self, batch_total_loss):
         # if self.global_step == self.optimization_start:
