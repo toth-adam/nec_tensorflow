@@ -589,9 +589,10 @@ class NECAgent:
         scatter_update_ph_ops = list(self.dnd_scatter_update_placeholder_ops.values())
         scatter_update_value_ph_ops = list(self.dnd_value_update_placeholder_ops.values())
         for i, (b_s, b_i, b_u) in enumerate(zip(batch_states_mod, batch_indices, batch_update_values)):
-            ops = [self.state_embedding, scatter_update_key_ops[i], scatter_update_value_ops[i]]
-            feed_dict = {self.state: b_s, scatter_update_ph_ops[i]: b_i, scatter_update_value_ph_ops[i]: b_u}
-            self.session.run(ops, feed_dict=feed_dict)
+            if b_s:
+                ops = [self.state_embedding, scatter_update_key_ops[i], scatter_update_value_ops[i]]
+                feed_dict = {self.state: b_s, scatter_update_ph_ops[i]: b_i, scatter_update_value_ph_ops[i]: b_u}
+                self.session.run(ops, feed_dict=feed_dict)
 
         state_embeddings = self.session.run(self.state_embedding, feed_dict={self.state: batch_states})
 
