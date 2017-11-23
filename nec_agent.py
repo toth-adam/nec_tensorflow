@@ -469,19 +469,19 @@ class NECAgent:
         for act, ann in self.anns.items():
             # These are the indices we get back from ANN search
             indices = ann.query(search_keys)
-            log.debug("ANN indices for action {}: {}".format(act, indices))
+            # log.debug("ANN indices for action {}: {}".format(act, indices))
             # Create numpy array with full of corresponding action vector index
             # action_indices = np.full(indices.shape, self.action_vector.index(act))
             # log.debug("Action indices for action {}: {}".format(act, action_indices))
             # Riffle two arrays
             # tf_indices = self._riffle_arrays(action_indices, indices)
-            batch_indices.append(indices)
+            # batch_indices.append(indices)
             # Very important part: Modify LRU Order here
             # Doesn't work without tabular update of course!
             if update_LRU_order == 1:
                 _ = [self.tf_index__state_hash[act][i] for i in indices.ravel()]
         np_batch = np.asarray(batch_indices, dtype=np.int32)
-        log.debug("Batch update indices: {}".format(np_batch))
+        # log.debug("Batch update indices: {}".format(np_batch))
 
         # Reshaping to gather_nd compatible format
         # final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])], dtype=np.int32)
@@ -798,6 +798,7 @@ class AnnSearch:
         self.ann = FLANN()
         self.neighbors_number = neighbors_number
         self._ann_index__tf_index = {}
+        self._ann_index__tf_index_v2 = {}
         self.dnd_max_memory = int(dnd_max_memory)
         self._removed_points = 0
         self.flann_params = None
@@ -855,35 +856,24 @@ class AnnSearch:
                 counter += 1
 
         self.add_state_embedding(state_embeddings[~cond_vector])
+        self._ann_index__tf_index_v2.update(self._ann_index__tf_index)
 
     def build_index(self, tf_variable_dnd):
         self.flann_params = self.ann.build_index(tf_variable_dnd, algorithm="kdtree", target_precision=1)
         self._ann_index__tf_index = {}
         self._removed_points = 0
         # log.info("ANN index has been rebuilt for action {}.".format(self.action))
+        self._ann_index__tf_index_v2 = {i: i for i in range(len(tf_variable_dnd))}
 
     def query(self, state_embeddings):
         indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
                                        checks=self.flann_params["checks"])
-        tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
-                              for index_row in indices]
+        # tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
+        #                       for index_row in indices]
+        int64_indices = np.asarray(indices, dtype=np.int64)
+        tf_var_dnd_indices = [[self._ann_index__tf_index_v2[j] for j in index_row] for index_row in int64_indices]
 
         return np.asarray(tf_var_dnd_indices, dtype=np.int32)
-
-
-# def _ann_gradient(op, grad):
-#     return grad
-
-
-# # Define custom py_func which takes also a grad op as argument:
-# def py_func(func, inp, Tout, stateful=True, name=None, grad=None):
-#     # Need to generate a unique name to avoid duplicates:
-#     rnd_name = 'PyFuncGrad' + str(np.random.randint(0, 1000000))
-#
-#     tf.RegisterGradient(rnd_name)(grad)  # see _MySquareGrad for grad example
-#     g = tf.get_default_graph()
-#     with g.gradient_override_map({"PyFunc": rnd_name}):
-#         return tf.py_func(func, inp, Tout, stateful=stateful, name=name)
 
 
 def setup_logging(level=logging.INFO, is_stream_handler=True, is_file_handler=False, file_handler_filename=None):
