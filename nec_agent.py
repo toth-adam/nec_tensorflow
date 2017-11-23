@@ -8,11 +8,11 @@ from scipy.signal import lfilter
 
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
-from tensorflow.python.client import timeline
+# from tensorflow.python.client import timeline
 
 from lru import LRU
 from pyflann import FLANN
-from mmh3 import hash128
+# from mmh3 import hash128
 
 from replay_memory import ReplayMemory
 
@@ -28,7 +28,7 @@ class NECAgent:
                  input_shape=(84, 84, 4), kernel_size=((3, 3), (3, 3), (3, 3), (3, 3)), num_outputs=(32, 32, 32, 32),
                  stride=((2, 2), (2, 2), (2, 2), (2, 2)), delta=1e-3, rep_memory_size=1e5, batch_size=32,
                  n_step_horizon=100, discount_factor=0.99, log_save_directory=None, epsilon_decay_bounds=(5000, 25000),
-                 optimization_start=1000, ann_rebuild_freq=10):
+                 optimization_start=1000, ann_rebuild_freq=10, tab_update_for_neighbours_dist=False):
 
         # TÖRÖLNI
         self.seen_states_number = 0
@@ -49,6 +49,12 @@ class NECAgent:
         # Tabular parameters
         self.tab_alpha = tabular_learning_rate
         self.dnd_max_memory = int(dnd_max_memory)
+        if tab_update_for_neighbours_dist:
+            self.tabular_update_for_neighbours = True
+            self.tab_update_for_neighbours_dist = tab_update_for_neighbours_dist
+        else:
+            self.tabular_update_for_neighbours = False
+            self.tab_update_for_neighbours_dist = tab_update_for_neighbours_dist
 
         # Reinforcement learning parameters
         self.n_step_horizon = n_step_horizon
@@ -74,7 +80,7 @@ class NECAgent:
         # Replay memory
         self.replay_memory = ReplayMemory(size=rep_memory_size, stack_size=input_shape[-1])
 
-        #AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben
+        # AZ LRU az tf_index:state_hash mert az ann_search alapján kell a sorrendet updatelni mert a dict1-ben
         # updatelni kell dict1 az state_hash:tf_index ez ahhoz kell hogy megnezzem hogy benne van-e tehát milyen
         # legyen a tab_update és hogy melyik indexre a DND-ben
         self.tf_index__state_hash = {k: LRU(self.dnd_max_memory) for k in action_vector}
@@ -343,8 +349,8 @@ class NECAgent:
         # Saving the relevant quantities
         self._observation_list.append(processed_observation)
         self._agent_input_list.append(agent_input)
-        self._agent_input_hashes_list.append(hash128(agent_input))
-        # self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
+        # self._agent_input_hashes_list.append(hash128(agent_input))
+        self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
         return agent_input
 
     def _optimize(self):
@@ -387,7 +393,10 @@ class NECAgent:
             # We expand the agent_input dimensions here to run the graph for batch_size = 1 -- action selection
             search_keys = self.session.run(self.state_embedding,
                                            feed_dict={self.state: np.expand_dims(agent_input, axis=0)})
-            batch_indices = self._search_ann(search_keys, 1)
+            if self.tabular_update_for_neighbours:
+                batch_indices, neighbour_distances = self._search_ann(search_keys, 1)
+            else:
+                batch_indices = self._search_ann(search_keys, 1)
             feed_dict = {self.state: np.expand_dims(agent_input, axis=0)}
             feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
             max_q = self.session.run(self.predicted_q, feed_dict=feed_dict)
@@ -466,27 +475,36 @@ class NECAgent:
 
     def _search_ann(self, search_keys, update_LRU_order):
         batch_indices = []
+        neighbour_distances = []
         for act, ann in self.anns.items():
             # These are the indices we get back from ANN search
-            indices = ann.query(search_keys)
+            if update_LRU_order == 1 and self.tabular_update_for_neighbours:
+                indices, distances = ann.query(search_keys, True)
+                neighbour_distances.append(distances)
+            else:
+                indices = ann.query(search_keys, False)
             # log.debug("ANN indices for action {}: {}".format(act, indices))
             # Create numpy array with full of corresponding action vector index
             # action_indices = np.full(indices.shape, self.action_vector.index(act))
             # log.debug("Action indices for action {}: {}".format(act, action_indices))
             # Riffle two arrays
             # tf_indices = self._riffle_arrays(action_indices, indices)
-            # batch_indices.append(indices)
+            batch_indices.append(indices)
             # Very important part: Modify LRU Order here
             # Doesn't work without tabular update of course!
             if update_LRU_order == 1:
                 _ = [self.tf_index__state_hash[act][i] for i in indices.ravel()]
         np_batch = np.asarray(batch_indices, dtype=np.int32)
+        np_neigh_dist = np.asarray(neighbour_distances, dtype=np.float32)
         # log.debug("Batch update indices: {}".format(np_batch))
 
         # Reshaping to gather_nd compatible format
         # final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])], dtype=np.int32)
 
-        return np_batch
+        if update_LRU_order == 1 and self.tabular_update_for_neighbours:
+            return np_batch, np_neigh_dist
+        else:
+            return np_batch
 
     def _tabular_like_update(self, states, state_hashes, actions, q_ns):
         log.debug("Tabular like update has been started.")
@@ -589,7 +607,7 @@ class NECAgent:
         scatter_update_ph_ops = list(self.dnd_scatter_update_placeholder_ops.values())
         scatter_update_value_ph_ops = list(self.dnd_value_update_placeholder_ops.values())
         for i, (b_s, b_i, b_u) in enumerate(zip(batch_states_mod, batch_indices, batch_update_values)):
-            if b_s:
+            if len(b_s) > 0:
                 ops = [self.state_embedding, scatter_update_key_ops[i], scatter_update_value_ops[i]]
                 feed_dict = {self.state: b_s, scatter_update_ph_ops[i]: b_i, scatter_update_value_ph_ops[i]: b_u}
                 self.session.run(ops, feed_dict=feed_dict)
@@ -866,15 +884,21 @@ class AnnSearch:
         # log.info("ANN index has been rebuilt for action {}.".format(self.action))
         self._ann_index__tf_index_v2 = {i: i for i in range(len(tf_variable_dnd))}
 
-    def query(self, state_embeddings):
-        indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
-                                       checks=self.flann_params["checks"])
+    def query(self, state_embeddings, return_distances):
+        if return_distances:
+            indices, distances = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
+                                           checks=self.flann_params["checks"])
+        else:
+            indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
+                                           checks=self.flann_params["checks"])
         # tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
         #                       for index_row in indices]
         int64_indices = np.asarray(indices, dtype=np.int64)
         tf_var_dnd_indices = [[self._ann_index__tf_index_v2[j] for j in index_row] for index_row in int64_indices]
-
-        return np.asarray(tf_var_dnd_indices, dtype=np.int32)
+        if return_distances:
+            return np.asarray(tf_var_dnd_indices, dtype=np.int32), np.asarray(distances, dtype=np.float32)
+        else:
+            return np.asarray(tf_var_dnd_indices, dtype=np.int32)
 
 
 def setup_logging(level=logging.INFO, is_stream_handler=True, is_file_handler=False, file_handler_filename=None):

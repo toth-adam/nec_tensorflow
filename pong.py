@@ -23,6 +23,9 @@ nec_agent_parameters_dict = {
     "input_shape": (42, 42, 3),
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
     "num_outputs": (16, 16, 16),
+    "neighbor_number": 5,
+    "epsilon_decay_bounds": (500, 501),
+    # "tab_update_for_neighbours_dist": 0.0001,
     "stride": ((2, 2), (2, 2), (2, 2))
 }
 
