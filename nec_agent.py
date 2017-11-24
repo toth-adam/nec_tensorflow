@@ -112,8 +112,6 @@ class NECAgent:
 
         if self._cpu_only:
             device = "/cpu:0"
-        elif args["gpu_id"]:
-            device = "/device:GPU:" + str(args["gpu_id"])
         else:
             device = "/device:GPU:0"
 
