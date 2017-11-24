@@ -24,8 +24,8 @@ nec_agent_parameters_dict = {
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
     "num_outputs": (16, 16, 16),
     "neighbor_number": 5,
-    "epsilon_decay_bounds": (500, 501),
-    # "tab_update_for_neighbours_dist": 0.0001,
+    "epsilon_decay_bounds": (100, 200),
+    "tab_update_for_neighbours_dist": 0.0022,
     "stride": ((2, 2), (2, 2), (2, 2))
 }
 
@@ -33,7 +33,7 @@ agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
 
 #agent.full_load("D:/RL/nec_saves", 1170862)
 
-max_ep_num = 5
+max_ep_num = 1
 
 env = gym.make('Pong-v4')
 

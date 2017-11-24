@@ -12,7 +12,7 @@ import tensorflow.contrib.slim as slim
 
 from lru import LRU
 from pyflann import FLANN
-from mmh3 import hash128
+# from mmh3 import hash128
 
 from replay_memory import ReplayMemory
 
@@ -216,7 +216,8 @@ class NECAgent:
         self._rewards_deque = deque()
         self._q_values_list = []
         if self.tabular_update_for_neighbours:
-            self.tabular_neighbour_list = []
+            self.tabular_neighbour_list = None
+            self.create_tabular_neighbour_list = True
 
         # Logging and TF FileWriter
         self.log_save_directory = log_save_directory
@@ -295,7 +296,8 @@ class NECAgent:
         self._rewards_deque = deque()
         self._q_values_list = []
         if self.tabular_update_for_neighbours:
-            self.tabular_neighbour_list = []
+            self.tabular_neighbour_list = None
+            self.create_tabular_neighbour_list = True
         self.episode_step = 0
         # Increment episode number
         self.episode_number += 1
@@ -353,8 +355,8 @@ class NECAgent:
         # Saving the relevant quantities
         self._observation_list.append(processed_observation)
         self._agent_input_list.append(agent_input)
-        self._agent_input_hashes_list.append(hash128(agent_input))
-        # self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
+        # self._agent_input_hashes_list.append(hash128(agent_input))
+        self._agent_input_hashes_list.append(hash(agent_input.tobytes()))
         return agent_input
 
     def _optimize(self):
@@ -415,18 +417,27 @@ class NECAgent:
         return action
 
     def _add_to_tabular_neighbour(self, action, indices, distances):
+        # TODO ELLENŐRÍZNI A DTYPEOKAT
         action_index = self.action_vector.index(action)
         action_vector = np.full(self.neighbor_number, action_index, dtype=np.int32)
+        episode_step_vector = np.full(self.neighbor_number, self.episode_step, dtype=np.int32)
         indices_vector = np.asarray(np.ravel(indices[action_index]), dtype=np.int32)
-        distances_vector = np.ravel(distances[action_index])
+        distances_vector = np.asarray(np.ravel(distances[action_index]), dtype=np.float32)
         cond_vector = []
         for dis in distances_vector:
             if dis < self.tab_update_for_neighbours_dist:
                 cond_vector.append(True)
             else:
                 cond_vector.append(False)
-        self.tabular_neighbour_list.append([action_vector, indices_vector, distances_vector, cond_vector])
 
+        if self.create_tabular_neighbour_list is True:
+            self.create_tabular_neighbour_list = False
+            self.tabular_neighbour_list = np.array([action_vector, indices_vector, distances_vector, cond_vector,
+                                                    episode_step_vector])
+        else:
+            self.tabular_neighbour_list = np.concatenate((self.tabular_neighbour_list,
+                                                          np.array([action_vector, indices_vector, distances_vector,
+                                                                    cond_vector, episode_step_vector])), axis=1)
 
     def _tensorboard_loss_writer(self, batch_total_loss):
         # if self.global_step == self.optimization_start:
@@ -541,9 +552,24 @@ class NECAgent:
         dnd_gather_indices = np.asarray([self.state_hash__tf_index[a][sh] if sh in self.state_hash__tf_index[a]
                                          else None for sh, a in zip(state_hashes, actions)])
         # TÖRÖLNI
-        for i in dnd_gather_indices:
-            if i != None:
-                self.seen_states_number += 1
+        # for i in dnd_gather_indices:
+        #     if i != None:
+        #         self.seen_states_number += 1
+        if self.tabular_update_for_neighbours and self.tabular_neighbour_list is not None:
+            neighbour_cond_vector = self.tabular_neighbour_list[3] != 0
+            neighbour_indices = np.asarray(self.tabular_neighbour_list[1], dtype=np.int32)
+            neighbour_action_indices = np.asarray(self.tabular_neighbour_list[0], dtype=np.int32)
+            neighbour_q_values = np.zeros(neighbour_indices.shape, dtype=np.float32)
+
+            neighbour_indices_for_gather = self._batches_by_action(neighbour_action_indices[neighbour_cond_vector],
+                                                                   neighbour_indices[neighbour_cond_vector])
+
+            neighbour_feed_dict = {o: k for o, k in zip(self.dnd_placeholder_ops.values(),
+                                                        neighbour_indices_for_gather)}
+            neighbour_q_vals = self.session.run(list(self.dnd_value_gather_ops.values()), feed_dict=neighbour_feed_dict)
+            neighbour_q_vals2 = [deque(np.squeeze(n, axis=1)) for n in neighbour_q_vals]
+            neighbour_q_vals = [neighbour_q_vals2[a].popleft() for a in neighbour_action_indices[neighbour_cond_vector]]
+            neighbour_q_values[neighbour_cond_vector] = neighbour_q_vals
 
         in_cond_vector = dnd_gather_indices != None
         # indices = np.squeeze(self._riffle_arrays(action_indices[in_cond_vector], dnd_gather_indices[in_cond_vector]),
