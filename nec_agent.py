@@ -283,8 +283,9 @@ class NECAgent:
                                dnd_lengths)
 
         # Add average episode total reward to its deque
-        self.windowed_average_total_reward.append(self.episode_total_reward)
-        self._tensorboard_reward_writer()
+        if self.log_save_directory:
+            self.windowed_average_total_reward.append(self.episode_total_reward)
+            self._tensorboard_reward_writer()
 
         self.reset_episode_related_containers()
 

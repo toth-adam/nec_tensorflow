@@ -18,14 +18,14 @@ def image_preprocessor(state, size=(42, 42)):
 setup_logging()
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "C:/RL/nec_saves",
+    # "log_save_directory": "C:/RL/nec_saves",
     "dnd_max_memory": 100000,
     "input_shape": (42, 42, 3),
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
     "num_outputs": (16, 16, 16),
     "neighbor_number": 5,
     "epsilon_decay_bounds": (100, 200),
-    "tab_update_for_neighbours_dist": 0.0022,
+    # "tab_update_for_neighbours_dist": 0.0022,
     "stride": ((2, 2), (2, 2), (2, 2))
 }
 
@@ -33,7 +33,7 @@ agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
 
 #agent.full_load("D:/RL/nec_saves", 1170862)
 
-max_ep_num = 1
+max_ep_num = 5
 
 env = gym.make('Pong-v4')
 
