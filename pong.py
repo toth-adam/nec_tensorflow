@@ -19,13 +19,13 @@ setup_logging()
 
 nec_agent_parameters_dict = {
     # "log_save_directory": "C:/RL/nec_saves",
-    "dnd_max_memory": 100000,
+    "dnd_max_memory": 150000,
     "input_shape": (42, 42, 3),
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
     "num_outputs": (16, 16, 16),
-    "neighbor_number": 5,
-    "epsilon_decay_bounds": (100, 200),
-    # "tab_update_for_neighbours_dist": 0.0022,
+    "neighbor_number": 50,
+    "epsilon_decay_bounds": (5000, 25000),
+    "tab_update_for_neighbours_dist": 0.0022,
     "stride": ((2, 2), (2, 2), (2, 2))
 }
 

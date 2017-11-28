@@ -368,7 +368,7 @@ class NECAgent:
         action_batch_indices = [self.action_vector.index(a) for a in action_batch]
         search_keys = self.session.run(self.state_embedding,
                                        feed_dict={self.state: state_batch})
-        batch_indices = self._search_ann(search_keys, 0)
+        batch_indices, _ = self._search_ann(search_keys, 0)
         feed_dict = {self.state: state_batch, self.action_index: action_batch_indices, self.target_q: q_n_batch}
         feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
         batch_total_loss, _ = self.session.run([self.total_loss, self.optimizer],
@@ -400,10 +400,7 @@ class NECAgent:
             # We expand the agent_input dimensions here to run the graph for batch_size = 1 -- action selection
             search_keys = self.session.run(self.state_embedding,
                                            feed_dict={self.state: np.expand_dims(agent_input, axis=0)})
-            if self.tabular_update_for_neighbours:
-                batch_indices, neighbour_distances = self._search_ann(search_keys, 1)
-            else:
-                batch_indices = self._search_ann(search_keys, 1)
+            batch_indices, neighbour_distances = self._search_ann(search_keys, 1)
 
             feed_dict = {self.state: np.expand_dims(agent_input, axis=0)}
             feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
@@ -441,7 +438,6 @@ class NECAgent:
                                                                     cond_vector, episode_step_vector])), axis=1)
 
     def _tensorboard_loss_writer(self, batch_total_loss):
-        # if self.global_step == self.optimization_start:
         if self.create_list_for_total_losses:
             self.create_list_for_total_losses = False
             self._loss_list = []
@@ -487,7 +483,7 @@ class NECAgent:
         state = [self._agent_input_list[self.episode_step]]
         search_keys = self.session.run(self.state_embedding,
                                        feed_dict={self.state: state})
-        batch_indices = self._search_ann(search_keys, 0)
+        batch_indices, _ = self._search_ann(search_keys, 0)
         feed_dict = {self.state: state}
         feed_dict.update({o: k for o, k in zip(self.dnd_placeholder_ops.values(), batch_indices)})
         bootstrap_value = np.amax(self.session.run(self.pred_q_values,
@@ -512,11 +508,7 @@ class NECAgent:
         neighbour_distances = []
         for act, ann in self.anns.items():
             # These are the indices we get back from ANN search
-            if update_LRU_order == 1 and self.tabular_update_for_neighbours:
-                indices, distances = ann.query(search_keys, True)
-                neighbour_distances.append(distances)
-            else:
-                indices = ann.query(search_keys, False)
+            indices, distances = ann.query(search_keys, True)
             # log.debug("ANN indices for action {}: {}".format(act, indices))
             # Create numpy array with full of corresponding action vector index
             # action_indices = np.full(indices.shape, self.action_vector.index(act))
@@ -524,6 +516,7 @@ class NECAgent:
             # Riffle two arrays
             # tf_indices = self._riffle_arrays(action_indices, indices)
             batch_indices.append(indices)
+            neighbour_distances.append(distances)
             # Very important part: Modify LRU Order here
             # Doesn't work without tabular update of course!
             if update_LRU_order == 1:
@@ -535,10 +528,7 @@ class NECAgent:
         # Reshaping to gather_nd compatible format
         # final_indices = np.asarray([np_batch[:, j, :, :] for j in range(np_batch.shape[1])], dtype=np.int32)
 
-        if update_LRU_order == 1 and self.tabular_update_for_neighbours:
-            return np_batch, np_neigh_dist
-        else:
-            return np_batch
+        return np_batch, np_neigh_dist
 
     def _tabular_like_update(self, states, state_hashes, actions, q_ns):
         log.debug("Tabular like update has been started.")
@@ -552,14 +542,19 @@ class NECAgent:
         dnd_q_values = np.zeros(q_ns.shape, dtype=np.float32)
         dnd_gather_indices = np.asarray([self.state_hash__tf_index[a][sh] if sh in self.state_hash__tf_index[a]
                                          else None for sh, a in zip(state_hashes, actions)])
-        # TÖRÖLNI
-        # for i in dnd_gather_indices:
-        #     if i != None:
-        #         self.seen_states_number += 1
+        # Counting the exact same states
+        for i in dnd_gather_indices:
+            if i != None:
+                self.seen_states_number += 1
+
+        # ########### Beginning of tabular like update with neighbours ############
         if self.tabular_update_for_neighbours and self.tabular_neighbour_list is not None:
+            local_neigh_dict = {a_i: {} for a_i in range(self.number_of_actions)}
+
             neighbour_cond_vector = self.tabular_neighbour_list[3] != 0
             neighbour_indices = np.asarray(self.tabular_neighbour_list[1], dtype=np.int32)
             neighbour_action_indices = np.asarray(self.tabular_neighbour_list[0], dtype=np.int32)
+            neighbour_episode_step = np.asarray(self.tabular_neighbour_list[4], dtype=np.int32)
             neighbour_q_values = np.zeros(neighbour_indices.shape, dtype=np.float32)
 
             neighbour_indices_for_gather = self._batches_by_action(neighbour_action_indices[neighbour_cond_vector],
@@ -571,6 +566,44 @@ class NECAgent:
             neighbour_q_vals2 = [deque(np.squeeze(n, axis=1)) for n in neighbour_q_vals]
             neighbour_q_vals = [neighbour_q_vals2[a].popleft() for a in neighbour_action_indices[neighbour_cond_vector]]
             neighbour_q_values[neighbour_cond_vector] = neighbour_q_vals
+
+            for n_a_i, n_i, n_q_v, n_e_s in zip(neighbour_action_indices[neighbour_cond_vector],
+                                                neighbour_indices[neighbour_cond_vector],
+                                                neighbour_q_values[neighbour_cond_vector],
+                                                neighbour_episode_step[neighbour_cond_vector]):
+                if n_i not in local_neigh_dict[n_a_i]:
+                    local_neigh_dict[n_a_i][n_i] = [n_q_v, q_ns[n_e_s]]
+                else:
+                    local_neigh_dict[n_a_i][n_i].append(q_ns[n_e_s])
+
+            # Calculation of Q values
+            neigh_final_indices = [deque() for _ in self.action_vector]
+            neigh_final_values = [deque() for _ in self.action_vector]
+            for action, ind_vals in local_neigh_dict.items():
+                if len(ind_vals) > 0:
+                    indices, b_values = ind_vals.keys(), ind_vals.values()
+                    for index, values in zip(indices, b_values):
+                        q_dict_value = values.pop(0)
+                        for value in values:
+                            q_dict_value = q_dict_value + self.tab_alpha * (value - q_dict_value)
+                        neigh_final_indices[action].append(index)
+                        neigh_final_values[action].append(q_dict_value)
+
+            # Convert deques to np.arrays
+            neigh_final_indices = [np.asarray(array, dtype=np.int32) for array in neigh_final_indices]
+            neigh_final_values = [np.asarray(array, dtype=np.float32).reshape((len(array), 1))
+                                  for array in neigh_final_values]
+
+            # Scatter update
+            scatter_update_value_ops = list(self.dnd_scatter_update_value_ops.values())
+            scatter_update_value_ph_ops = list(self.dnd_value_update_placeholder_ops.values())
+            scatter_update_ph_ops = list(self.dnd_scatter_update_placeholder_ops.values())
+            for i, (n_f_i, n_f_v) in enumerate(zip(neigh_final_indices, neigh_final_values)):
+                if len(n_f_i) > 0:
+                    ops = [scatter_update_value_ops[i]]
+                    feed_dict = {scatter_update_ph_ops[i]: n_f_i, scatter_update_value_ph_ops[i]: n_f_v}
+                    self.session.run(ops, feed_dict=feed_dict)
+        # ########### End of tabular like update with neighbours ############
 
         in_cond_vector = dnd_gather_indices != None
         # indices = np.squeeze(self._riffle_arrays(action_indices[in_cond_vector], dnd_gather_indices[in_cond_vector]),
