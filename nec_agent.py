@@ -32,6 +32,7 @@ class NECAgent:
 
         # TÖRÖLNI
         self.seen_states_number = 0
+        self.below_treshold_neigh_numbers = 0
 
         self._cpu_only = cpu_only
 
@@ -425,6 +426,7 @@ class NECAgent:
         for dis in distances_vector:
             if dis < self.tab_update_for_neighbours_dist:
                 cond_vector.append(True)
+                self.below_treshold_neigh_numbers += 1
             else:
                 cond_vector.append(False)
 

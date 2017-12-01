@@ -18,14 +18,14 @@ def image_preprocessor(state, size=(42, 42)):
 setup_logging()
 
 nec_agent_parameters_dict = {
-    #"log_save_directory": "C:/RL/nec_saves",
+    "log_save_directory": "C:/RL/nec_saves",
     "dnd_max_memory": 150000,
     "input_shape": (42, 42, 3),
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
     "num_outputs": (16, 16, 16),
     "neighbor_number": 50,
-    "epsilon_decay_bounds": (1000, 1001),
-    "tab_update_for_neighbours_dist": 0.0022,
+    "epsilon_decay_bounds": (5000, 25000),
+    "tab_update_for_neighbours_dist": 0.0008,
     "stride": ((2, 2), (2, 2), (2, 2))
 }
 
@@ -33,9 +33,10 @@ agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
 
 #agent.full_load("D:/RL/nec_saves", 1170862)
 
-max_ep_num = 5
+max_ep_num = 50000
 
 env = gym.make('Pong-v4')
+env.env.frameskip = 4
 
 games_reward_list = []
 games_step_num_list = []
@@ -87,14 +88,15 @@ for i in range(max_ep_num):
     print()
     print("Games' steps number:")
     print(games_step_num_list)
-    print("Previously seen states number:", agent.seen_states_number)
+    print("Previously seen states number: ", agent.seen_states_number)
+    print("Below treshold neighbours number: ", agent.below_treshold_neigh_numbers)
     print("-----------------------------------------------------------------------------")
 
 
     games_reward_list = []
     games_step_num_list = []
 
-    if time.time() - last_save_time > 10800:
+    if time.time() - last_save_time > 8800:
         agent.full_save("C:/RL/nec_saves")
         last_save_time = time.time()
         print("/////////////////////////////////////// SAVE ////////////////////////////////////////")
