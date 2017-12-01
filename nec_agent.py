@@ -428,14 +428,17 @@ class NECAgent:
             else:
                 cond_vector.append(False)
 
+        # Itt jön létre az array ha még nem él
         if self.create_tabular_neighbour_list is True:
             self.create_tabular_neighbour_list = False
-            self.tabular_neighbour_list = np.array([action_vector, indices_vector, distances_vector, cond_vector,
-                                                    episode_step_vector])
+            self.tabular_neighbour_list = np.array([action_vector[cond_vector], indices_vector[cond_vector],
+                                                    episode_step_vector[cond_vector]])
+        # Itt már az élő array-hoz van hozzáfűzés
         else:
             self.tabular_neighbour_list = np.concatenate((self.tabular_neighbour_list,
-                                                          np.array([action_vector, indices_vector, distances_vector,
-                                                                    cond_vector, episode_step_vector])), axis=1)
+                                                          np.array([action_vector[cond_vector],
+                                                                    indices_vector[cond_vector],
+                                                                    episode_step_vector[cond_vector]])), axis=1)
 
     def _tensorboard_loss_writer(self, batch_total_loss):
         if self.create_list_for_total_losses:
@@ -551,26 +554,20 @@ class NECAgent:
         if self.tabular_update_for_neighbours and self.tabular_neighbour_list is not None:
             local_neigh_dict = {a_i: {} for a_i in range(self.number_of_actions)}
 
-            neighbour_cond_vector = self.tabular_neighbour_list[3] != 0
             neighbour_indices = np.asarray(self.tabular_neighbour_list[1], dtype=np.int32)
             neighbour_action_indices = np.asarray(self.tabular_neighbour_list[0], dtype=np.int32)
-            neighbour_episode_step = np.asarray(self.tabular_neighbour_list[4], dtype=np.int32)
-            neighbour_q_values = np.zeros(neighbour_indices.shape, dtype=np.float32)
+            neighbour_episode_step = np.asarray(self.tabular_neighbour_list[2], dtype=np.int32)
 
-            neighbour_indices_for_gather = self._batches_by_action(neighbour_action_indices[neighbour_cond_vector],
-                                                                   neighbour_indices[neighbour_cond_vector])
+            neighbour_indices_for_gather = self._batches_by_action(neighbour_action_indices, neighbour_indices)
 
             neighbour_feed_dict = {o: k for o, k in zip(self.dnd_placeholder_ops.values(),
                                                         neighbour_indices_for_gather)}
             neighbour_q_vals = self.session.run(list(self.dnd_value_gather_ops.values()), feed_dict=neighbour_feed_dict)
             neighbour_q_vals2 = [deque(np.squeeze(n, axis=1)) for n in neighbour_q_vals]
-            neighbour_q_vals = [neighbour_q_vals2[a].popleft() for a in neighbour_action_indices[neighbour_cond_vector]]
-            neighbour_q_values[neighbour_cond_vector] = neighbour_q_vals
+            neighbour_q_values = [neighbour_q_vals2[a].popleft() for a in neighbour_action_indices]
 
-            for n_a_i, n_i, n_q_v, n_e_s in zip(neighbour_action_indices[neighbour_cond_vector],
-                                                neighbour_indices[neighbour_cond_vector],
-                                                neighbour_q_values[neighbour_cond_vector],
-                                                neighbour_episode_step[neighbour_cond_vector]):
+            for n_a_i, n_i, n_q_v, n_e_s in zip(neighbour_action_indices, neighbour_indices, neighbour_q_values,
+                                                neighbour_episode_step):
                 if n_i not in local_neigh_dict[n_a_i]:
                     local_neigh_dict[n_a_i][n_i] = [n_q_v, q_ns[n_e_s]]
                 else:

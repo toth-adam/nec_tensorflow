@@ -18,13 +18,13 @@ def image_preprocessor(state, size=(42, 42)):
 setup_logging()
 
 nec_agent_parameters_dict = {
-    # "log_save_directory": "C:/RL/nec_saves",
+    #"log_save_directory": "C:/RL/nec_saves",
     "dnd_max_memory": 150000,
     "input_shape": (42, 42, 3),
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
     "num_outputs": (16, 16, 16),
     "neighbor_number": 50,
-    "epsilon_decay_bounds": (5000, 25000),
+    "epsilon_decay_bounds": (1000, 1001),
     "tab_update_for_neighbours_dist": 0.0022,
     "stride": ((2, 2), (2, 2), (2, 2))
 }
@@ -95,7 +95,7 @@ for i in range(max_ep_num):
     games_step_num_list = []
 
     if time.time() - last_save_time > 10800:
-        agent.full_save("D:/RL/nec_saves")
+        agent.full_save("C:/RL/nec_saves")
         last_save_time = time.time()
         print("/////////////////////////////////////// SAVE ////////////////////////////////////////")
 
