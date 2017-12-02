@@ -553,7 +553,7 @@ class NECAgent:
                 ii += 1
 
         batch_states = np.asarray(batch_states, dtype=np.float32)
-        batch_indices = np.asarray(batch_indices, dtype=np.int32)
+        batch_indices = np.expand_dims(np.asarray(batch_indices, dtype=np.int32), axis=1)
         batch_update_values = np.asarray(batch_update_values, dtype=np.float32)
         batch_indices_for_ann = np.asarray(batch_indices_for_ann, dtype=np.int32)
         batch_cond_vector = np.asarray(batch_cond_vector, dtype=np.bool)
@@ -572,7 +572,7 @@ class NECAgent:
         scatter_update_value_ph_ops = list(self.dnd_value_update_placeholder_ops.values())
         for i, (b_s, b_i, b_u) in enumerate(zip(batch_states_mod, batch_indices, batch_update_values)):
             if len(b_s) > 0:
-                ops = [self.state_embedding, scatter_update_key_ops[i], scatter_update_value_ops[i]]
+                ops = [scatter_update_key_ops[i], scatter_update_value_ops[i]]
                 feed_dict = {self.state: b_s, scatter_update_ph_ops[i]: b_i, scatter_update_value_ph_ops[i]: b_u}
                 self.session.run(ops, feed_dict=feed_dict)
 
