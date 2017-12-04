@@ -24,8 +24,8 @@ nec_agent_parameters_dict = {
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
     "num_outputs": (16, 16, 16),
     "neighbor_number": 50,
-    "epsilon_decay_bounds": (5000, 25000),
-    "tab_update_for_neighbours_dist": 0.0008,
+    "epsilon_decay_bounds": (500, 501),
+    # "tab_update_for_neighbours_dist": 0.00003,
     "stride": ((2, 2), (2, 2), (2, 2))
 }
 
@@ -36,7 +36,7 @@ agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
 max_ep_num = 50000
 
 env = gym.make('Pong-v4')
-env.env.frameskip = 4
+# env.env.frameskip = 4
 
 games_reward_list = []
 games_step_num_list = []
@@ -100,4 +100,3 @@ for i in range(max_ep_num):
         agent.full_save("C:/RL/nec_saves")
         last_save_time = time.time()
         print("/////////////////////////////////////// SAVE ////////////////////////////////////////")
-

@@ -513,7 +513,7 @@ class NECAgent:
         neighbour_distances = []
         for act, ann in self.anns.items():
             # These are the indices we get back from ANN search
-            indices, distances = ann.query(search_keys, True)
+            indices, distances = ann.query(search_keys)
             # log.debug("ANN indices for action {}: {}".format(act, indices))
             # Create numpy array with full of corresponding action vector index
             # action_indices = np.full(indices.shape, self.action_vector.index(act))
@@ -584,7 +584,7 @@ class NECAgent:
                     for index, values in zip(indices, b_values):
                         q_dict_value = values.pop(0)
                         for value in values:
-                            q_dict_value = q_dict_value + self.tab_alpha * (value - q_dict_value)
+                            q_dict_value = q_dict_value + (self.tab_alpha * 0.5) * (value - q_dict_value)
                         neigh_final_indices[action].append(index)
                         neigh_final_values[action].append(q_dict_value)
 
@@ -965,21 +965,15 @@ class AnnSearch:
         # log.info("ANN index has been rebuilt for action {}.".format(self.action))
         self._ann_index__tf_index_v2 = {i: i for i in range(len(tf_variable_dnd))}
 
-    def query(self, state_embeddings, return_distances):
-        if return_distances:
-            indices, distances = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
-                                           checks=self.flann_params["checks"])
-        else:
-            indices, _ = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
-                                           checks=self.flann_params["checks"])
+    def query(self, state_embeddings):
+        indices, distances = self.ann.nn_index(state_embeddings, num_neighbors=self.neighbors_number,
+                                               checks=self.flann_params["checks"])
         # tf_var_dnd_indices = [[self._ann_index__tf_index[j] if j in self._ann_index__tf_index else j for j in index_row]
         #                       for index_row in indices]
         int64_indices = np.asarray(indices, dtype=np.int64)
         tf_var_dnd_indices = [[self._ann_index__tf_index_v2[j] for j in index_row] for index_row in int64_indices]
-        if return_distances:
-            return np.asarray(tf_var_dnd_indices, dtype=np.int32), np.asarray(distances, dtype=np.float32)
-        else:
-            return np.asarray(tf_var_dnd_indices, dtype=np.int32)
+
+        return np.asarray(tf_var_dnd_indices, dtype=np.int32), np.asarray(distances, dtype=np.float32)
 
 
 def setup_logging(level=logging.INFO, is_stream_handler=True, is_file_handler=False, file_handler_filename=None):
