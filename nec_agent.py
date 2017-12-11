@@ -97,7 +97,7 @@ class NECAgent:
         # For logging the total loss and windowed average episode reward
         self.create_list_for_total_losses = True
         self.episode_total_reward = 0
-        self.windowed_average_total_reward = deque(maxlen=5)
+        self.windowed_average_total_reward = deque(maxlen=15)
 
         # ----------- TENSORFLOW GRAPH BUILDING ----------- #
 
@@ -117,7 +117,6 @@ class NECAgent:
 
         with tf.device(device):
             self.state = tf.placeholder(shape=[None, *self._input_shape], dtype=tf.float32, name="state")
-
             # Always better to use smaller kernel size! These layers are from OpenAI
             # Learning Atari: An Exploration of the A3C Reinforcement
             # TODO: USE 1x1 kernels-bottleneck, CS231n Winter 2016: Lecture 11 from 29 minutes
@@ -256,8 +255,9 @@ class NECAgent:
                                dnd_lengths)
 
         # Add average episode total reward to its deque
-        self.windowed_average_total_reward.append(self.episode_total_reward)
-        self._tensorboard_reward_writer()
+        if self.log_save_directory:
+            self.windowed_average_total_reward.append(self.episode_total_reward)
+            self._tensorboard_reward_writer()
 
         self.reset_episode_related_containers()
 
@@ -310,9 +310,10 @@ class NECAgent:
                 self.tf_index__state_hash[a][tf_index] = state_hash
                 self.state_hash__tf_index[a][state_hash] = tf_index
         # ANN index building
-        for action_index, act in enumerate(self.action_vector):
-            dnd_keys = self.session.run(self.dnd_keys)
-            self.anns[act].build_index(dnd_keys[action_index][:self._dnd_length(act)])
+        dnd_keys = self.session.run(list(self.dnd_key_ops.values()))
+        for act, ann in self.anns.items():
+            action_index = self.action_vector.index(act)
+            ann.build_index(dnd_keys[action_index][:self._dnd_length(act)])
 
         self.replay_memory.load(path, glob_step_num)
 
@@ -764,7 +765,9 @@ class NECAgent:
     @staticmethod
     def _create_tf_session():
         # return tf.Session(config=tf.ConfigProto(log_device_placement=True))
-        return tf.Session()
+        gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.85)
+        sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+        return sess
 
     def _check_list_ids(self, s, a, q):
         def get_index(l, o):
