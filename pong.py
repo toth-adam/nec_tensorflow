@@ -18,19 +18,18 @@ def image_preprocessor(state, size=(42, 42)):
 setup_logging()
 
 nec_agent_parameters_dict = {
-    "log_save_directory": "C:/RL/nec_saves",
+    "log_save_directory": "/home/atoth/temp/tabular_test",
     "dnd_max_memory": 150000,
     "input_shape": (42, 42, 3),
     "kernel_size": ((3, 3), (3, 3), (3, 3)),
     "num_outputs": (16, 16, 16),
     "neighbor_number": 50,
     "epsilon_decay_bounds": (500, 501),
-    # "tab_update_for_neighbours_dist": 0.00003,
+    "tab_update_for_neighbours_dist": 0.00003,
     "stride": ((2, 2), (2, 2), (2, 2))
 }
 
 agent = NECAgent([0, 2, 3], **nec_agent_parameters_dict)
-
 #agent.full_load("D:/RL/nec_saves", 1170862)
 
 max_ep_num = 50000
