@@ -234,6 +234,13 @@ class NECAgent:
 
         return action
 
+    def get_action_for_test(self, processed_observation):
+        agent_input = self._get_agent_input(processed_observation)
+
+        action = self._get_action(agent_input)
+        self.episode_step += 1
+        return action
+
     # This is the main function which we call in different environments after an episode is finished.
     def update(self):
         #  játék vége van kiszámolom a disc_rewardokat viszont az elsőnek n_hor darab rewardból
@@ -875,11 +882,8 @@ def setup_logging(level=logging.INFO, is_stream_handler=True, is_file_handler=Fa
         ch.setFormatter(formatter)
         log.addHandler(ch)
 
-    if is_file_handler:
-        if file_handler_filename:
-            fh = logging.FileHandler(file_handler_filename)
-            fh.setLevel(level)
-            fh.setFormatter(formatter)
-            log.addHandler(fh)
-        else:
-            raise ValueError("file_handler_filename must not be None if is_file_handler = True")
+    if file_handler_filename:
+        fh = logging.FileHandler(file_handler_filename)
+        fh.setLevel(level)
+        fh.setFormatter(formatter)
+        log.addHandler(fh)
