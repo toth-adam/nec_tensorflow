@@ -5,7 +5,8 @@ This is an implementation of (a slightly modified version of) Deepmind's `Neural
 
   The modifications:
     - The order of the LRU is modified only when the agent interacts its environment.
-    - The convolutional layers are from the A3C's implementation of OpenAI. 
+    - The convolutional layers are from the A3C's implementation of OpenAI.
+    - The size of the input image is 42x42 pixels (Learning Atari: An Exploration of the A3C Reinforcement)
 
 Dependencies
 ------------
@@ -21,4 +22,7 @@ Dependencies
 Notes
 -----
 (In case of FLANN, a fork is used instead of the original repo, because add_points() and remove_point() methods of FLANN has no python
-binding in the original repo.)
+bindings in the original repo.)
+
+Results of our experiments
+--------------------------
