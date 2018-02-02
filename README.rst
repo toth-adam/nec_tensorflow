@@ -19,7 +19,7 @@ Dependencies
 - **mmh3**: https://github.com/aappleby/smhasher (python wrapper: https://pypi.python.org/pypi/mmh3)
 - **OpenAI gym**: https://github.com/openai/gym
 
-Results of our experiments
+Results of our experiments on ATARI 2600's Ms. PacMan
 --------------------------
 Our base experiments had the following parameters:
   * Input image size: 42x42
