@@ -31,7 +31,7 @@ In the next experiments, we modified the size of the DNDs:
   * Size of the DNDs: 250k
 .. image:: result_pictures/250kdnd_tg.png
 
-In the last experiments, we modified the size of the input image size:
+In the last experiments, we modified the size of the input image:
   * Input image size: 84x84
   * Size of the DNDs: 100k
 .. image:: result_pictures/84x84_tg.png
